@@ -85,14 +85,28 @@ one tap downloads the APK and opens Android's installer. No PC needed.
 Shipping an update (versionCode must rise every time):
 
 ```bash
+# 0. one-time: set up release signing (never commit this file)
+cp android/keystore.properties.template android/keystore.properties   # then edit it
+
 # 1. bump: app.json version + android.versionCode, android/app/build.gradle versionCode/versionName
-# 2. rebuild signed release:
-.\gradlew.bat assembleRelease -PreactNativeArchitectures=arm64-v8a   # in android/
+# 2. rebuild signed release (in android/):
+./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a        # Windows: .\gradlew.bat
 # 3. publish (tag number MUST equal the new versionCode):
-gh release create v4 --title "GhostMesh 1.0.3" --notes "..." path\to.apk
+gh release create v4 --title "GhostMesh 1.0.3" --notes "..." path/to.apk
 ```
 
 `src/updates/selfUpdate.ts` holds the whole client (check/download/install).
+
+> **Two build fixes worth knowing about.** `android/gradle/wrapper/gradle-wrapper.properties`
+> used to point at `file:///C:/Users/chaha/android/gradle-8.10.2-all.zip`, so
+> `gradlew` only ever worked on one Windows machine — it now pulls the standard
+> Gradle 8.10.2 distribution over HTTPS. And the release keystore password was
+> committed in plaintext in `android/gradle.properties`; it now lives in the
+> gitignored `android/keystore.properties`. **The old password is still in git
+> history at `e035cf4` and the repo is public — rotate that key.** This matters
+> more than usual here, because the self-updater installs APKs from GitHub
+> releases and Android's only defence against a forged update is the signing
+> identity.
 
 ## Get the APK (install on Android)
 
@@ -194,11 +208,29 @@ reassembly, 0x20 fragmentation, a real HTTP bridge relay, persistence + panic
 wipe, karma, peer expiry, signature rejection, duty cycle and link budget.
 No hardware, no simulator — but the code paths are the ones the phone runs.
 
+## Continuous integration
+
+`ci/android-verify.yml` is a GitHub Actions workflow that runs `tsc`, all three
+test suites, and `./gradlew :app:compileDebugKotlin` — the last one is the real
+compile check on `GhostMeshRadioModule.kt`. It lives in `ci/` rather than
+`.github/workflows/` because the agent that wrote it authenticates as a GitHub
+App without the `workflows` permission, so it cannot create files there. Enable
+it with:
+
+```bash
+mkdir -p .github/workflows
+cp ci/android-verify.yml .github/workflows/verify.yml
+git add -A && git commit -m "ci: verify" && git push
+```
+
 ### What the tests do NOT prove
 
 - **Nothing here has touched a real radio.** The peripheral Kotlin module has
-  not been compiled (no JDK/Gradle in the sandbox) and no BLE has been put on
-  air. Two phones in the same room is the only real test of the mesh.
+  not been compiled — the sandbox has no JDK/Gradle/Android SDK and no way to
+  fetch one (only the npm registry and api.github.com are reachable) — and no
+  BLE has been put on air. Enable the workflow above, or run
+  `cd android && ./gradlew :app:compileDebugKotlin` anywhere with the SDK.
+  Either way, two phones in the same room is the only real test of the mesh.
 - **iOS peripheral mode does not exist** — there is no `ios/` directory and no
   Swift counterpart, so iOS devices scan but cannot be discovered.
 - The chat UI has not been driven by a UI test; it is exercised only through
