@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "GhostMesh",
+    "slug": "ghostmesh",
+    "version": "1.0.1",
+    "orientation": "portrait",
+    "scheme": "ghostmesh",
+    "runtimeVersion": { "policy": "appVersion" },
+    "plugins": [
+      "expo-router",
+      "expo-asset",
+      "expo-updates",
+      "expo-file-system"
+    ],
+    "android": {
+      "package": "com.ghostmesh.app",
+      "versionCode": 2,
+      "permissions": [
+        "BLUETOOTH",
+        "BLUETOOTH_ADMIN",
+        "BLUETOOTH_ADVERTISE",
+        "BLUETOOTH_CONNECT",
+        "BLUETOOTH_SCAN",
+        "ACCESS_FINE_LOCATION",
+        "REQUEST_INSTALL_PACKAGES"
+      ]
+    },
+    "ios": {
+      "bundleIdentifier": "com.ghostmesh.app",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "GhostMesh uses Bluetooth to relay encrypted messages off-grid with nearby phones.",
+        "NSBluetoothPeripheralUsageDescription": "GhostMesh advertises your mesh node so peers can find you offline."
+      }
+    }
+  }
+}

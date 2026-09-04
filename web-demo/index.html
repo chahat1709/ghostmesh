@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GhostMesh — web demo (companion simulator for the mobile app)</title>
+<style>
+:root{--bg:#0b0b12;--card:#17171f;--acc:#8b5cf6;--teal:#06b6d4;--grn:#10b981;--txt:#fff;--mut:#888}
+*{box-sizing:border-box;font-family:Inter,system-ui,Segoe UI,Roboto,sans-serif}
+body{margin:0;background:var(--bg);color:var(--txt)}
+.wrap{max-width:1100px;margin:0 auto;padding:16px;display:grid;grid-template-columns:1fr 300px;gap:14px}
+@media(max-width:900px){.wrap{grid-template-columns:1fr}}
+.card{background:var(--card);border-radius:14px;padding:14px}
+.logo{font-size:26px;font-weight:900}.logo span{color:var(--acc)}
+.sub{color:var(--acc);font-weight:700;font-size:13px}
+.tribes{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
+.tribe{padding:7px 12px;border-radius:999px;background:#22222e;color:#999;border:0;cursor:pointer;font-weight:700}
+.tribe.on{background:var(--acc);color:#fff}
+#feed{display:flex;flex-direction:column;gap:8px;min-height:300px;max-height:52vh;overflow:auto}
+.bubble{background:#22222e;border-radius:12px;padding:10px}.bubble.mine{background:#241b3d;border:1px solid var(--acc)}
+.meta{font-size:11px;color:var(--mut);font-weight:700;margin-bottom:4px}
+.body{font-size:15px;line-height:1.45;overflow-wrap:anywhere}
+.row{display:flex;gap:8px;margin-top:10px}
+input,button{border-radius:12px;border:0;padding:12px;font-size:15px}
+input[type=text]{flex:1;background:#0e0e15;color:#fff;border:1px solid #2a2a3a;outline:none}
+button.send{background:var(--acc);color:#fff;font-weight:800;cursor:pointer;padding:12px 18px}
+button.ghost{background:#22222e;color:#ccc;cursor:pointer;font-weight:700}
+.peer{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;color:#ccc}
+.dot{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:900;color:#fff;flex:none}
+canvas#radar{width:100%;border-radius:12px;background:#0e0e15;border:1px solid #2a2a3a}
+.hint{color:#666;font-size:12px;line-height:1.6}
+.tag{font-size:11px;background:#22222e;border-radius:6px;padding:2px 6px;color:var(--teal);font-weight:800}
+.react{cursor:pointer;margin-right:6px;font-size:13px;background:#0e0e15;border-radius:8px;padding:2px 7px;border:1px solid #2a2a3a;color:#ccc}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div>
+  <div class="card">
+    <div class="logo">◈ <span>GhostMesh</span></div>
+    <div class="sub">off-grid · encrypted · no servers — web demo of the mobile BLE protocol</div>
+    <div id="onboard" style="margin-top:12px;display:flex;gap:8px">
+      <input id="nick" type="text" maxlength="18" placeholder="pick a nickname">
+      <button class="send" onclick="join()">enter the mesh →</button>
+    </div>
+    <div id="app" style="display:none">
+      <div class="tribes" id="tribes"></div>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <input id="pw" type="text" placeholder="room password (optional — AES-256)" style="flex:1">
+        <button class="ghost" onclick="lockRoom()">🔒 lock</button>
+        <button class="ghost" onclick="toggleBridge()" id="bridgeBtn">🌉 bridge: off</button>
+        <button class="ghost" onclick="panic()" title="triple-tap analog">💀 panic</button>
+      </div>
+      <div id="feed"></div>
+      <div class="row">
+        <input id="box" type="text" placeholder="message #lobby… (Enter to send)">
+        <button class="send" onclick="send()">➤</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+        <label class="hint"><input type="checkbox" id="burn"> 🔥 burn after 30s</label>
+        <span class="hint" id="stat"></span>
+        <button class="ghost" onclick="exportLog()" style="margin-left:auto">export log</button>
+      </div>
+    </div>
+  </div>
+  <p class="hint">How this differs from bitchat: <span class="tag">identity</span> pubkey per ghost, not pure-anon ·
+  <span class="tag">tribes</span> with AES-256 passwords · <span class="tag">smart relay</span> adaptive TTL + dedupe ·
+  <span class="tag">karma</span> relay reputation · <span class="tag">radar</span> signal map · <span class="tag">burn</span> disappearing msgs · simulated BLE bots below relay your packets with real hop counts.</p>
+</div>
+<div>
+  <div class="card"><b>📡 proximity radar</b><canvas id="radar" width="270" height="220"></canvas><div id="peers"></div></div>
+  <div class="card" style="margin-top:14px"><b>📦 mesh log</b><div id="log" class="hint" style="max-height:220px;overflow:auto;margin-top:6px"></div></div>
+</div>
+</div>
+<script>
+// ---------- identity ----------
+const COLORS=['#8b5cf6','#06b6d4','#f59e0b','#ef4444','#10b981','#ec4899'];
+const rnd=n=>crypto.getRandomValues(new Uint8Array(n));
+const hex=b=>[...b].map(x=>x.toString(16).padStart(2,'0')).join('');
+let me=null; const TRIBES=['lobby','ballers','music','trade','afterparty'];
+let tribe='lobby', roomKeys={}, msgs={lobby:[]}, seen=new Set(), karma={}, peers={};
+let bridge=false, msgN=0;
+try{const s=JSON.parse(localStorage.getItem('gm')||'null');if(s){msgs=s.msgs||msgs;}}catch{}
+function save(){try{localStorage.setItem('gm',JSON.stringify({msgs}))}catch{}}
+function log(t){const el=document.getElementById('log');el.innerHTML=`<div>› ${t}</div>`+el.innerHTML.slice(0,1200);}
+
+// ---------- tribe AES (real PBKDF2+AES-GCM, same as mobile src/crypto/ghostCrypto.ts) ----------
+async function keyFor(t,pw){const enc=new TextEncoder();
+const base=await crypto.subtle.importKey('raw',enc.encode(`ghostmesh|${t}|${pw||''}`),'PBKDF2',false,['deriveKey']);
+return crypto.subtle.deriveKey({name:'PBKDF2',salt:enc.encode('ghostmesh-salt-v1'),iterations:50000,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);}
+async function seal(t,txt){const k=await keyFor(t,roomKeys[t]||'');const iv=crypto.getRandomValues(new Uint8Array(12));
+const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv},k,new TextEncoder().encode(txt));
+const o=new Uint8Array(12+ct.byteLength);o.set(iv,0);o.set(new Uint8Array(ct),12);return btoa(String.fromCharCode(...o));}
+async function open(t,s){try{const k=await keyFor(t,roomKeys[t]||'');const r=Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+return new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:r.slice(0,12)},k,r.slice(12)));}catch{return null;}}
+
+// ---------- simulated BLE mesh: 5 bots relay like real phones ----------
+const BOTS=[['Vega','#06b6d4'],['Kicks','#f59e0b'],['Satoshi','#10b981'],['Nyx','#ec4899'],['Dre','#ef4444']];
+const LINES={lobby:['anyone catching signal out there?','mesh is PACKED tonight 👻','no bars, no problem','relayed from 3 hops away lol','this >>> group chats that need internet'],
+ballers:['Rank the starting 5 all-time, go','pickup run saturday? who in','that buzzer beater was unreal','defense wins chips idc'],
+music:['drop your aux pick, one song only','afrobeats vs amapiano tonight','that new album is a 9/10'],
+trade:['selling courtside-adjacent seats, dm','who got vintage jerseys?','trade my sneakers size 11'],
+afterparty:['rooftop after this. password at door','bring a friend, bring signal 😤','location drops in 10']};
+function mkbot(i){const [n,c]=BOTS[i];return{pub:hex(rnd(32)),nick:n,color:c,rssi:-55-Math.random()*30,hops:1,karma:Math.floor(Math.random()*40)};}
+let bots=[];
+function join(){const n=(document.getElementById('nick').value||'ghost-'+hex(rnd(2))).slice(0,18);
+me={pub:hex(rnd(32)),nick:n,color:COLORS[Math.floor(Math.random()*COLORS.length)]};
+document.getElementById('onboard').style.display='none';document.getElementById('app').style.display='block';
+bots=BOTS.map((_,i)=>mkbot(i));bots.forEach(b=>peers[b.pub]={...b,last:Date.now()});
+log(`identity <b>${n}</b> · pubkey ${me.pub.slice(0,12)}…`);
+log('BLE scan started (simulated) — 5 ghosts found nearby');
+renderTribes();render();radar();
+setInterval(tick,2500);setInterval(chatter,9000);
+document.getElementById('box').addEventListener('keydown',e=>{if(e.key==='Enter')send();});
+setTimeout(()=>botSay(),3000);}
+function tick(){ // RSSI jitter + announce + relay karma
+  bots.forEach(b=>{b.rssi=Math.max(-92,Math.min(-38,b.rssi+(Math.random()*8-4)));peers[b.pub]={...peers[b.pub],rssi:b.rssi,last:Date.now()};});
+  if(bridge&&!peers['far']){peers['far']={pub:'far',nick:'Tokyo-relay',color:'#888',rssi:-88,hops:4,karma:210,last:Date.now()};log('🌉 bridge node joined via internet uplink (Tokyo-relay, 4 hops)');}
+  if(!bridge)delete peers['far'];
+  renderPeers();radar();
+  document.getElementById('stat').textContent=`${Object.keys(peers).length} nearby · dedupe cache ${seen.size} · ttl≤7`;
+}
+function botSay(){if(!me)return;const b=bots[Math.floor(Math.random()*bots.length)];
+const pool=LINES[tribe]||LINES.lobby;post(b,pool[Math.floor(Math.random()*pool.length)],1+Math.floor(Math.random()*3));}
+function chatter(){if(!me||Math.random()<0.35)return;botSay();}
+function post(who,text,hops){const id=hex(rnd(8));seen.add(id);
+msgs[tribe]=[...(msgs[tribe]||[]),{id,from:who.pub,nick:who.nick,color:who.color,text,ts:Date.now(),hops,mine:who.pub===me.pub,rx:[]}
+].slice(-200);save();render();
+if(!msgs[tribe])return;
+if(who.pub!==me?.pub)log(`⇤ ${who.nick} via ${hops} hop${hops>1?'s':''} (ttl ${7-hops} left)`);}
+async function send(){const inp=document.getElementById('box');const t=inp.value.trim();if(!t||!me)return;inp.value='';
+const sealed=await seal(tribe,t);const id=hex(rnd(8));seen.add(id);
+msgs[tribe]=[...(msgs[tribe]||[]),{id,from:me.pub,nick:me.nick,color:me.color,text:t,sealed,ts:Date.now(),hops:0,mine:true,rx:[]}].slice(-200);save();render();
+log(`⇥ broadcast "${t.slice(0,34)}" · sealed ${sealed.length}B · ttl 5`);
+// bots relay with delay = visible multi-hop
+bots.slice(0,3).forEach((b,i)=>{setTimeout(()=>{b.karma++;karma[b.pub]=(karma[b.pub]||0)+1;
+peers[b.pub].karma=b.karma;log(`⇄ relayed by <b style="color:${b.color}">${b.nick}</b> (karma ${b.karma})`);renderPeers();},400*(i+1));});
+if(document.getElementById('burn').checked)setTimeout(()=>{msgs[tribe]=(msgs[tribe]||[]).filter(m=>m.id!==id);save();render();log('🔥 message burned');},30000);}
+function react(id,e){const m=(msgs[tribe]||[]).find(x=>x.id===id);if(!m)return;m.rx=m.rx||[];m.rx.push(e);save();render();}
+function renderTribes(){document.getElementById('tribes').innerHTML=TRIBES.map(t=>
+`<button class="tribe ${t===tribe?'on':''}" onclick="switchT('${t}')">#${t}${roomKeys[t]?' 🔒':''}</button>`).join('');
+document.getElementById('box').placeholder=`message #${tribe}…`;}
+function switchT(t){tribe=t;renderTribes();render();}
+async function lockRoom(){const pw=document.getElementById('pw').value;roomKeys[tribe]=pw;renderTribes();log(pw?`🔒 #${tribe} locked with password (AES-256)`:`🔓 #${tribe} unlocked`);document.getElementById('pw').value='';}
+function toggleBridge(){bridge=!bridge;document.getElementById('bridgeBtn').textContent=`🌉 bridge: ${bridge?'on':'off'}`;log(bridge?'bridge uplink enabled — far peers reachable':'bridge uplink disabled');tick();}
+function panic(){if(!confirm('Panic wipe? Deletes identity + messages on this device.'))return;
+localStorage.removeItem('gm');msgs={lobby:[]};seen.clear();document.getElementById('feed').innerHTML='<div class="hint">wiped. stay ghostly 👻</div>';log('💀 panic wipe executed');}
+function exportLog(){const blob=new Blob([JSON.stringify(msgs[tribe]||[],null,2)],{type:'application/json'});
+const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`ghostmesh-${tribe}.json`;a.click();}
+function render(){const f=document.getElementById('feed');const list=msgs[tribe]||[];
+f.innerHTML=list.map(m=>`<div class="bubble ${m.mine?'mine':''}"><div class="meta"><span style="color:${m.color}">●</span> ${m.nick} · ${m.hops===0?'direct':m.hops+' hops'} ✓ <span style="float:right">${new Date(m.ts).toLocaleTimeString()}</span></div><div class="body">${(m.text||'').replace(/</g,'&lt;')}</div><div style="margin-top:6px">${['🔥','❤️','💯'].map(e=>`<span class="react" onclick="react('${m.id}','${e}')">${e}${m.rx&&m.rx.includes(e)?' ✓':''}</span>`).join('')}</div></div>`).join('')||'<div class="hint">Silent… be the first ghost here.</div>';
+f.scrollTop=f.scrollHeight;}
+function renderPeers(){document.getElementById('peers').innerHTML=Object.values(peers).map(p=>
+`<div class="peer"><span class="dot" style="background:${p.color}">${p.nick.slice(0,2).toUpperCase()}</span><span><b>${p.nick}</b><br><span class="hint">${Math.round(p.rssi)}dBm · ${p.hops<=1?'direct':p.hops+' hops'} · karma ${p.karma||0}</span></span></div>`).join('');}
+function radar(){const c=document.getElementById('radar'),x=c.getContext('2d');x.clearRect(0,0,270,220);
+x.strokeStyle='#26263a';[[100,110,95],[100,110,62],[100,110,30]].forEach(([a,b,r])=>{x.beginPath();x.arc(a,b,r,0,7);x.stroke();});
+x.fillStyle='#8b5cf6';x.beginPath();x.arc(100,110,8,0,7);x.fill();x.fillStyle='#fff';x.font='bold 10px sans-serif';x.fillText('◈',96,114);
+Object.values(peers).slice(0,10).forEach((p,i)=>{const a=i/10*6.28;const r=p.rssi>-60?30:p.rssi>-75?62:95;
+const px=100+Math.cos(a)*r,py=110+Math.sin(a)*r*.7;x.fillStyle=p.color;x.beginPath();x.arc(px,py,9,0,7);x.fill();
+x.fillStyle='#fff';x.font='bold 8px sans-serif';x.fillText(p.nick.slice(0,2).toUpperCase(),px-7,py+3);});}
+</script>
+</body></html>
