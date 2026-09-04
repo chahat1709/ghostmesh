@@ -5,6 +5,7 @@
 // karma/radar stay GhostMesh extensions.
 
 import nacl from 'tweetnacl';
+import { decodeUTF8, encodeUTF8, encodeBase64, decodeBase64 } from 'tweetnacl-util';
 import {
   BitPacket,
   hex,
@@ -72,38 +73,48 @@ export function peerIdFromHex(peerIdHex: string): Uint8Array {
   return b;
 }
 
-// --- Tribe locked rooms (GhostMesh ext): password -> AES-256-GCM ---
+// --- Tribe locked rooms (GhostMesh ext): sha256-KDF + XSalsa20-Poly1305 ---
+// Pure tweetnacl — no WebCrypto, so it runs in Hermes with zero polyfills.
+// NOTE: format differs from the old WebCrypto rooms; old `GM1:` seals are unreadable.
 
-export async function tribeKey(tribe: string, password = ''): Promise<CryptoKey> {
-  const enc = new TextEncoder();
-  const base = await crypto.subtle.importKey('raw', enc.encode(`ghostmesh|${tribe}|${password}`), 'PBKDF2', false, ['deriveKey']);
-  return crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt: enc.encode('ghostmesh-salt-v1'), iterations: 100000, hash: 'SHA-256' },
-    base,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt']
-  );
+function tribeKeyBytes(tribe: string, password: string): Uint8Array {
+  let h = sha256(new TextEncoder().encode(`ghostmesh|${tribe}|v2`));
+  const pw = new TextEncoder().encode(password);
+  for (let i = 0; i < 10000; i++) {
+    const both = new Uint8Array(h.length + pw.length + 1);
+    both.set(h, 0);
+    both.set(pw, h.length);
+    both[both.length - 1] = i & 0xff;
+    h = sha256(both);
+  }
+  return h; // 32 bytes
 }
 
-export async function sealTribeMsg(key: CryptoKey, plaintext: string): Promise<string> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
-  const out = new Uint8Array(12 + ct.byteLength);
-  out.set(iv, 0);
-  out.set(new Uint8Array(ct), 12);
-  let s = '';
-  for (const b of out) s += String.fromCharCode(b);
-  return btoa(s);
+export function tribeKey(tribe: string, password = ''): Uint8Array {
+  return tribeKeyBytes(tribe, password);
 }
 
-export async function openTribeMsg(key: CryptoKey, sealed: string): Promise<string | null> {
+export function sealTribeMsg(key32: Uint8Array, plaintext: string): string {
+  const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
+  const box = nacl.secretbox(decodeUTF8(plaintext), nonce, key32);
+  const out = new Uint8Array(nonce.length + box.length);
+  out.set(nonce, 0);
+  out.set(box, nonce.length);
+  return encodeBase64(out);
+}
+
+export function openTribeMsg(key32: Uint8Array, sealed: string): string | null {
   try {
-    const raw = Uint8Array.from(atob(sealed), (c) => c.charCodeAt(0));
-    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: raw.slice(0, 12) }, key, raw.slice(12));
-    return new TextDecoder().decode(pt);
+    const raw = decodeBase64(sealed);
+    if (raw.length < nacl.secretbox.nonceLength + nacl.secretbox.overheadLength) return null;
+    const pt = nacl.secretbox.open(
+      raw.slice(nacl.secretbox.nonceLength),
+      raw.slice(0, nacl.secretbox.nonceLength),
+      key32
+    );
+    return pt ? encodeUTF8(pt) : null; // wrong password → null, stays opaque
   } catch {
-    return null; // wrong password — ciphertext stays opaque
+    return null;
   }
 }
 

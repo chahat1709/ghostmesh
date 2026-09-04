@@ -39,20 +39,23 @@ your messages with real hop counts, RSSI radar, karma, locked rooms
 Verify it: `npm run test:bit` → 11/11 interop tests pass
 (SHA-256 vector, AEAD tamper, XX + X roundtrips, codec, TTL rules, reassembly).
 
-## OTA updates (no reinstall for JS changes)
+## Self-updates via GitHub (no EAS, no reinstall hassle)
 
-The app checks for JavaScript updates on launch and applies them silently
-(`app/_layout.tsx` + `expo-updates`, runtimeVersion = appVersion).
-After the one-time setup below, publishing an update is one command and users
-get it on next launch — no APK download. Native changes (BLE libs,
-permissions, SDK upgrades) still need a fresh APK.
+The app checks `github.com/chahat1709/ghostmesh/releases/latest` on launch.
+When a newer `v<versionCode>` tag exists, a green banner appears —
+one tap downloads the APK and opens Android's installer. No PC needed.
+
+Shipping an update (versionCode must rise every time):
 
 ```bash
-eas login
-eas update:configure   # once: links updates URL into the project
-npm run build:apk      # one last APK so it knows the update URL, then install it
-eas update --branch production --message "tribes v2"   # every JS update after that
+# 1. bump: app.json version + android.versionCode, android/app/build.gradle versionCode/versionName
+# 2. rebuild signed release:
+.\gradlew.bat assembleRelease -PreactNativeArchitectures=arm64-v8a   # in android/
+# 3. publish (tag number MUST equal the new versionCode):
+gh release create v3 --title "GhostMesh 1.0.2" --notes "..." path\to.apk
 ```
+
+`src/updates/selfUpdate.ts` holds the whole client (check/download/install).
 
 ## Get the APK (install on Android)
 

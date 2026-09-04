@@ -125,6 +125,7 @@ export default function Home() {
         <Pressable
           style={s.btn}
           onPress={() => {
+            try {
             const color = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
             const id = createIdentity(nick || `ghost-${randomHex(2)}`, color);
             setMe({ pubkey: id.peerIdHex, nick: id.nick, color });
@@ -170,8 +171,8 @@ export default function Home() {
                   if (body.startsWith('GM1:')) {
                     locked = true;
                     const pw = useChat.getState().tribePassword[routed.tribe] ?? '';
-                    const key = await tribeKey(routed.tribe, pw);
-                    const open = await openTribeMsg(key, body.slice(4));
+                    const key = tribeKey(routed.tribe, pw);
+                    const open = openTribeMsg(key, body.slice(4));
                     body = open ?? '🔒 locked room — set the password to read';
                   }
                   const peer = useChat.getState().peers[h];
@@ -193,11 +194,21 @@ export default function Home() {
             };
             broadcastAnnounce({ peerIdHex: id.peerIdHex, nick: id.nick });
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            } catch (err) {
+              Alert.alert('Could not enter the mesh', String((err as Error)?.message ?? err));
+            }
           }}
         >
           <Text style={s.btnText}>enter the mesh →</Text>
         </Pressable>
         <Text style={s.hint}>Real BitChat radio: binary mesh packets + Noise DMs + tribes + radar. Nothing leaves your phone except signed radio frames.</Text>
+        {update && (
+          <Pressable style={[s.updateBar, { width: '100%' }]} onPress={installUpdate}>
+            <Text style={s.updateTxt}>
+              {dlProgress === null ? `⬆ ${update.tag} ready — tap to update` : `⬇ downloading… ${Math.round(dlProgress * 100)}%`}
+            </Text>
+          </Pressable>
+        )}
       </View>
     );
   }
@@ -210,8 +221,8 @@ export default function Home() {
     setText('');
     const { signPriv, peerId } = secrets();
     const pw = tribePassword[tribe] ?? '';
-    const key = await tribeKey(tribe, pw);
-    const content = tagTribe(tribe, pw ? 'GM1:' + (await sealTribeMsg(key, body)) : body);
+    const key = tribeKey(tribe, pw);
+    const content = tagTribe(tribe, pw ? 'GM1:' + sealTribeMsg(key, body) : body);
     const payload = encodeChatMessage({
       flags: 0,
       timestampMs: Date.now(),

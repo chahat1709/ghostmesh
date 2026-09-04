@@ -1,3 +1,4 @@
+import 'react-native-get-random-values'; // must run before any tweetnacl RNG use
 import React, { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import * as Updates from 'expo-updates';
