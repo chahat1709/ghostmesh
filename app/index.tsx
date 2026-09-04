@@ -117,6 +117,10 @@ export default function Home() {
     }
   };
 
+  // NOTE: every hook must run before the early return below — React forbids
+  // changing the hook count between renders (this once crashed first login).
+  const feed = useMemo(() => messages[tribe] ?? [], [messages, tribe]);
+
   // onboarding identity — dual BitChat keys (§3)
   if (!me) {
     return (
@@ -239,8 +243,6 @@ export default function Home() {
       </View>
     );
   }
-
-  const feed = useMemo(() => messages[tribe] ?? [], [messages, tribe]);
 
   const sendMsg = async () => {
     const body = text.trim();
