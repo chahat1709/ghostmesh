@@ -93,6 +93,8 @@ export default function Home() {
   const inputRef = useRef<TextInput>(null);
   const [update, setUpdate] = useState<{ tag: string; url: string } | null>(null);
   const [dlProgress, setDlProgress] = useState<number | null>(null);
+  const [bootStep, setBootStep] = useState('');
+  const [busy, setBusy] = useState(false);
 
   // self-update check (GitHub releases) — silent unless an update exists
   useEffect(() => {
@@ -125,10 +127,24 @@ export default function Home() {
         <Pressable
           style={s.btn}
           onPress={() => {
+            void (async () => {
+            if (busy) return;
+            setBusy(true);
+            let phase = 'starting';
+            const tick = async (label: string) => {
+              phase = label;
+              setBootStep(label);
+              await new Promise<void>((r) => setTimeout(r, 80));
+            };
             try {
+            await tick('random…');
+            if (typeof (globalThis as any).crypto?.getRandomValues !== 'function') {
+              throw new Error('secure random missing (polyfill failed)');
+            }
             const color = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
+            await tick('keys…');
             const id = createIdentity(nick || `ghost-${randomHex(2)}`, color);
-            setMe({ pubkey: id.peerIdHex, nick: id.nick, color });
+            await tick('engine…');
             (globalThis as any).__ghostSignPriv = id.signPriv; // RAM only
             (globalThis as any).__ghostStaticPub = id.staticKey.pub;
             (globalThis as any).__ghostStatic = id.staticKey;
@@ -192,15 +208,26 @@ export default function Home() {
                 void show();
               }
             };
+            await tick('announce…');
             broadcastAnnounce({ peerIdHex: id.peerIdHex, nick: id.nick });
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            await tick('haptics…');
+            try {
+              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            } catch {}
+            await tick('opening…');
+            setMe({ pubkey: id.peerIdHex, nick: id.nick, color });
+            setBootStep('');
             } catch (err) {
-              Alert.alert('Could not enter the mesh', String((err as Error)?.message ?? err));
+              Alert.alert('Could not enter the mesh', phase + ': ' + String((err as Error)?.message ?? err));
+              setBootStep('');
             }
+            setBusy(false);
+            })();
           }}
         >
           <Text style={s.btnText}>enter the mesh →</Text>
         </Pressable>
+        {bootStep !== '' && <Text style={s.step}>{bootStep}</Text>}
         <Text style={s.hint}>Real BitChat radio: binary mesh packets + Noise DMs + tribes + radar. Nothing leaves your phone except signed radio frames.</Text>
         {update && (
           <Pressable style={[s.updateBar, { width: '100%' }]} onPress={installUpdate}>
@@ -316,6 +343,7 @@ const s = StyleSheet.create({
   logo: { color: '#fff', fontSize: 42, fontWeight: '900' },
   logoSm: { color: '#fff', fontSize: 20, fontWeight: '900' },
   sub: { color: '#8b5cf6', fontWeight: '700' },
+  step: { color: '#06b6d4', fontWeight: '700', marginTop: 4 },
   hint: { color: '#666', textAlign: 'center', marginTop: 12, lineHeight: 20 },
   input: { backgroundColor: '#17171f', color: '#fff', borderRadius: 12, padding: 12, width: '100%' },
   btn: { backgroundColor: '#8b5cf6', borderRadius: 12, padding: 14, width: '100%', alignItems: 'center' },
