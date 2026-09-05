@@ -38,7 +38,7 @@ export class MeshEngine {
   seen = new Map<string, number>(); // dedupeKey -> firstSeen ms
   outbox: Uint8Array[] = []; // raw encoded frames for offline recipients
   karma = new Map<string, number>(); // peerIdHex -> relayed count
-  onPacket: (p: BitPacket, status: RecvStatus) => void = () => {};
+  onPacket: (p: BitPacket, status: RecvStatus, meta?: { linkId: string; rssi: number }) => void = () => {};
   transport: SendBytes = () => {};
   /** Returns the known Ed25519 signing key for a peer, or null. Fed by verified announces. */
   keyForPeer: (senderIdHex: string) => Uint8Array | null = () => null;
@@ -95,7 +95,7 @@ export class MeshEngine {
   }
 
   /** Inbound frame from BLE / sim. Relays valid traffic with TTL-1 + jitter. */
-  receive(raw: Uint8Array): RecvStatus {
+  receive(raw: Uint8Array, meta?: { linkId: string; rssi: number }): RecvStatus {
     const p = decodePacket(raw);
     if (!p) return 'dead';
     if (p.ttl <= 0) return 'dead';
@@ -122,7 +122,7 @@ export class MeshEngine {
 
     this.remember(key);
     this.karma.set(hex(p.senderId), (this.karma.get(hex(p.senderId)) ?? 0) + 0);
-    this.onPacket(p, status);
+    this.onPacket(p, status, meta);
 
     if (!this.isMe(p.senderId)) {
       const next = relayTTL(p.ttl, this.linkCount, isBroadcast(p));

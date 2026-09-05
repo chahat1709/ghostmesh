@@ -31,8 +31,12 @@ import {
 import { TRIBES } from '../src/protocol/types';
 import * as Application from 'expo-application';
 import { checkForApkUpdate, downloadAndInstall } from '../src/updates/selfUpdate';
+import { Radio } from '../src/protocol/radio';
+import { SERVICE_UUID_MAINNET, CHAR_UUID } from '../src/protocol/bitchat';
 
 let engine: MeshEngine | null = null;
+let radio: Radio | null = null;
+let announceTimer: any = null;
 
 function secrets(): { signPriv: Uint8Array; peerId: Uint8Array } {
   return { signPriv: (globalThis as any).__ghostSignPriv, peerId: (globalThis as any).__ghostPeerId };
@@ -156,9 +160,26 @@ export default function Home() {
             knownKeys().set(id.peerIdHex, id.signPub);
             knownKeys().set(id.peerIdHex + ':self', id.signPub);
             engine = new MeshEngine(id.peerId);
-            engine.transport = () => {}; // BleTransport attaches here on native build
+            engine.transport = (frame) => {
+              void radio?.broadcast(frame);
+            };
             engine.keyForPeer = (h) => knownKeys().get(h) ?? null;
-            engine.onPacket = (p, status) => {
+            await tick('bluetooth…');
+            radio = new Radio({
+              onFrame: (frame, linkId, rssi) => {
+                engine?.receive(frame, { linkId, rssi });
+              },
+              onLinksChanged: (n) => {
+                if (engine) engine.linkCount = n;
+              },
+            });
+            {
+              const res = await radio.start(SERVICE_UUID_MAINNET, CHAR_UUID);
+              if (res.error) {
+                Alert.alert('Bluetooth unavailable', res.error + ' — chat still works on this phone.');
+              }
+            }
+            engine.onPacket = (p, status, meta) => {
               const st = useChat.getState();
               if (p.type === MsgType.Announce) {
                 const a = decodeAnnounce(p.payload);
@@ -171,7 +192,7 @@ export default function Home() {
                   pubkey: h,
                   nick: a.nick || h.slice(0, 6),
                   color: colorFor(h),
-                  rssi: -70,
+                  rssi: meta?.rssi ?? -70,
                   lastSeen: Date.now(),
                   hopsAway: 1,
                   karma: 0,
@@ -196,6 +217,9 @@ export default function Home() {
                     body = open ?? '🔒 locked room — set the password to read';
                   }
                   const peer = useChat.getState().peers[h];
+                  if (peer && meta && Math.abs(peer.rssi - meta.rssi) > 2) {
+                    st.upsertPeer({ ...peer, rssi: meta.rssi, lastSeen: Date.now() });
+                  }
                   st.pushMsg({
                     id: m.id,
                     tribe: routed.tribe,
@@ -214,6 +238,11 @@ export default function Home() {
             };
             await tick('announce…');
             broadcastAnnounce({ peerIdHex: id.peerIdHex, nick: id.nick });
+            if (announceTimer) clearInterval(announceTimer);
+            announceTimer = setInterval(() => {
+              const st = useChat.getState();
+              if (st.me && engine) broadcastAnnounce({ peerIdHex: st.me.pubkey, nick: st.me.nick });
+            }, 20000);
             await tick('haptics…');
             try {
               await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -290,7 +319,17 @@ export default function Home() {
       setTapCount(0);
       Alert.alert('Panic wipe?', 'Deletes identity, messages and peers from this device.', [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'WIPE', style: 'destructive', onPress: panicWipe },
+        { text: 'WIPE', style: 'destructive', onPress: () => {
+          void radio?.stop();
+          radio = null;
+          engine = null;
+          if (announceTimer) { clearInterval(announceTimer); announceTimer = null; }
+          try { knownKeys().clear(); } catch {}
+          const g = globalThis as any;
+          delete g.__ghostSignPriv; delete g.__ghostStaticPub;
+          delete g.__ghostStatic; delete g.__ghostPeerId; delete g.__knownKeys;
+          panicWipe();
+        } },
       ]);
     }
     setTimeout(() => setTapCount(0), 1200);
