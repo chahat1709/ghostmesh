@@ -211,8 +211,10 @@ No hardware, no simulator — but the code paths are the ones the phone runs.
 ## Continuous integration
 
 `ci/android-verify.yml` is a GitHub Actions workflow that runs `tsc`, all three
-test suites, and `./gradlew :app:compileDebugKotlin` — the last one is the real
-compile check on `GhostMeshRadioModule.kt`. It lives in `ci/` rather than
+test suites, `./gradlew :app:compileDebugKotlin` (the real compile check on
+`GhostMeshRadioModule.kt`), and `:app:assembleDebug`, uploading the result as a
+**`ghostmesh-debug-apk`** artifact you can install straight from the run page.
+It is debug-signed — the release keystore is deliberately not in the repo. It lives in `ci/` rather than
 `.github/workflows/` because the agent that wrote it authenticates as a GitHub
 App without the `workflows` permission, so it cannot create files there. Enable
 it with:
