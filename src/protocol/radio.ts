@@ -111,7 +111,25 @@ export interface ScanDuty {
   idleMs: number;
 }
 
-export const DEFAULT_DUTY: ScanDuty = { activeMs: 3000, idleMs: 1500 };
+// Android (API 24+) silently blocks an app that STARTS a BLE scan more than
+// 5 times in 30 seconds — and a blocked scan returns no results at all, with no
+// error, which reads exactly like "there are no peers". The old 3s-on/1.5s-off
+// cycle restarted ~7 times per 30s and would have tripped it.
+export const ANDROID_SCAN_START_BUDGET = 5;
+export const ANDROID_SCAN_WINDOW_MS = 30_000;
+
+/** How many times this duty cycle restarts a scan inside a window. */
+export function scanStartsPer(duty: ScanDuty, windowMs = ANDROID_SCAN_WINDOW_MS): number {
+  const cycle = duty.activeMs + duty.idleMs;
+  return cycle <= 0 ? 0 : Math.ceil(windowMs / cycle);
+}
+
+/** True when the cycle stays inside Android's scan-start budget. */
+export function isDutyAndroidSafe(duty: ScanDuty = DEFAULT_DUTY): boolean {
+  return scanStartsPer(duty) <= ANDROID_SCAN_START_BUDGET;
+}
+
+export const DEFAULT_DUTY: ScanDuty = { activeMs: 8000, idleMs: 4000 };
 
 /** Next duty-cycle step. `active` = should the radio be scanning now? */
 export function dutyNext(isActive: boolean, d: ScanDuty = DEFAULT_DUTY): { active: boolean; ms: number } {

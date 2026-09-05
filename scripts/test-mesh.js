@@ -409,6 +409,11 @@ async function main() {
   // 14. radio duty cycle + connection budget
   await ok('duty cycle, RSSI budget and candidate ranking', () => {
     assert.deepStrictEqual(R.dutyNext(true, { activeMs: 3000, idleMs: 1500 }), { active: false, ms: 1500 });
+    // Android blocks >5 scan starts per 30s, silently returning no results
+    assert.strictEqual(R.scanStartsPer({ activeMs: 3000, idleMs: 1500 }), 7, 'old cycle restarts 7x/30s');
+    assert.strictEqual(R.isDutyAndroidSafe({ activeMs: 3000, idleMs: 1500 }), false, 'that trips the limit');
+    assert.strictEqual(R.scanStartsPer(R.DEFAULT_DUTY), 3);
+    assert.strictEqual(R.isDutyAndroidSafe(R.DEFAULT_DUTY), true, 'shipped default stays inside budget');
     assert.deepStrictEqual(R.dutyNext(false, { activeMs: 3000, idleMs: 1500 }), { active: true, ms: 3000 });
     const ids = ['a', 'b'];
     assert.strictEqual(R.shouldConnect({ id: 'c', rssi: -60, mesh: true }, ids), true);

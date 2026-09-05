@@ -75,6 +75,10 @@ Every one of these has to hold, and each is a real failure mode:
 4. **The peripheral half present** — see the radio table above. Without an
    advertiser a phone can scan all day and never be discovered.
 5. **Two phones in the same room.** Nothing else tests a mesh.
+6. **Scan duty cycle inside Android's budget.** Android silently stops
+   returning scan results if an app starts a scan more than 5 times in 30
+   seconds — no error, just "no peers". `DEFAULT_DUTY` is 8s on / 4s off
+   (3 starts per 30s); `isDutyAndroidSafe()` asserts any change stays legal.
 
 When any of these fails the app now says so: `MeshStatus.lastError` drives a red
 bar on the chat screen ("Bluetooth permission denied: BLUETOOTH_SCAN — tap to
