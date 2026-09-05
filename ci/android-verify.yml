@@ -55,3 +55,15 @@ jobs:
           chmod +x gradlew
           ./gradlew :app:compileDebugKotlin --no-daemon --stacktrace
         working-directory: android
+
+      # Debug-signed, so the artifact is directly installable (the release
+      # keystore is not in the repo by design).
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon
+        working-directory: android
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghostmesh-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
