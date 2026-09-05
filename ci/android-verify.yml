@@ -1,0 +1,69 @@
+# GitHub Actions workflow — kept in ci/ because the sandbox agent's GitHub App
+# token cannot create files under .github/workflows/ ("refusing to allow a
+# GitHub App to create or update workflow ... without `workflows` permission").
+#
+# To enable it (one command, from the repo root):
+#   mkdir -p .github/workflows && cp ci/android-verify.yml .github/workflows/verify.yml && git add -A && git commit -m "ci: verify" && git push
+#
+# Why it matters: this is the only way GhostMeshRadioModule.kt gets compiled.
+# It runs `./gradlew :app:compileDebugKotlin`, which is the real check on the
+# peripheral BLE module.
+name: verify
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: TS + tests + Android Kotlin compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install JS deps
+        run: npm ci --no-audit --no-fund
+
+      - name: TypeScript (strict)
+        run: npx tsc --noEmit
+
+      - name: Protocol + mesh test suites
+        run: npm test
+
+      - name: Android SDK packages
+        run: |
+          set -e
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKMANAGER" ] || SDKMANAGER="$(command -v sdkmanager)"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264"
+
+      - name: Compile Kotlin (includes the peripheral BLE module)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:compileDebugKotlin --no-daemon --stacktrace
+        working-directory: android
+
+      # Debug-signed, so the artifact is directly installable (the release
+      # keystore is not in the repo by design).
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon
+        working-directory: android
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghostmesh-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

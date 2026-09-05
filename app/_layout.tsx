@@ -25,5 +25,6 @@ export default function Layout() {
   return <Stack screenOptions={{ headerStyle: { backgroundColor: '#0b0b12' }, headerTintColor: '#fff' }}>
     <Stack.Screen name="index" options={{ title: 'GhostMesh' }} />
     <Stack.Screen name="radar" options={{ title: 'Proximity radar' }} />
+    <Stack.Screen name="dm" options={{ title: 'Direct message' }} />
   </Stack>;
 }

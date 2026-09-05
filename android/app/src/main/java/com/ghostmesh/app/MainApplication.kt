@@ -3,6 +3,7 @@ package com.ghostmesh.app
 import android.app.Application
 import android.content.res.Configuration
 
+import com.ghostmesh.app.radio.GhostMeshRadioPackage
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
 import com.facebook.react.ReactNativeHost
@@ -25,6 +26,8 @@ class MainApplication : Application(), ReactApplication {
             val packages = PackageList(this).packages
             // Packages that cannot be autolinked yet can be added manually here, for example:
             // packages.add(new MyReactNativePackage());
+            // Peripheral BLE (advertiser + GATT server) — ble-plx is central-only.
+            packages.add(GhostMeshRadioPackage())
             return packages
           }
 

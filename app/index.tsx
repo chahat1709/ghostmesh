@@ -1,95 +1,81 @@
 // GhostMesh main screen — dark cyber UI (deliberately NOT bitchat's terminal green).
 // Radio layer is real BitChat tech: binary v1 packets, TTL-7 flood, Ed25519
-// announces, Noise XX DMs. Tribes ride as `(#name)` prefixes [GM-EXT].
-// Triple-tap the logo = panic wipe (same reflex as bitchat).
+// announces, Noise XX DMs, courier outbox, chunked files, bridge uplink.
+// Tribes ride as `(#name)` prefixes [GM-EXT]. Triple-tap the logo = panic wipe.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, TextInput, Pressable, FlatList, StyleSheet, Alert } from 'react-native';
-import { Link } from 'expo-router';
+import { View, Text, TextInput, Pressable, FlatList, StyleSheet, Alert, ScrollView } from 'react-native';
+import { Link, router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import { useChat, AVATAR_COLORS } from '../src/store/chatStore';
-import { MeshEngine } from '../src/protocol/meshEngine';
+import { bindSession } from '../src/store/meshBinding';
+import { getSession, setSession } from '../src/store/sessionHost';
 import {
-  MsgType,
-  decodeAnnounce,
-  decodeChatMessage,
-  encodeAnnounce,
-  encodeChatMessage,
-  encodePacket,
-  hex,
-  originTTL,
-} from '../src/protocol/bitchat';
-import {
+  DEFAULT_BURN_S,
+  MeshSession,
   createIdentity,
-  openTribeMsg,
-  randomHex,
-  sealTribeMsg,
-  signBitPacket,
-  tribeKey,
-  verifyBitPacket,
-} from '../src/crypto/ghostCrypto';
+  loadIdentity,
+} from '../src/store/mesh';
 import { TRIBES } from '../src/protocol/types';
 import * as Application from 'expo-application';
 import { checkForApkUpdate, downloadAndInstall } from '../src/updates/selfUpdate';
 
-let engine: MeshEngine | null = null;
+/* Boot phases, surfaced on the onboarding screen so a silent close on a real
+ * device can be pinpointed (carried over from the v1.0.3 diagnostic build). */
+type Tick = (label: string) => Promise<void>;
+const noTick: Tick = async () => {};
 
-function secrets(): { signPriv: Uint8Array; peerId: Uint8Array } {
-  return { signPriv: (globalThis as any).__ghostSignPriv, peerId: (globalThis as any).__ghostPeerId };
-}
-
-function knownKeys(): Map<string, Uint8Array> {
-  if (!(globalThis as any).__knownKeys) (globalThis as any).__knownKeys = new Map();
-  return (globalThis as any).__knownKeys;
-}
-
-function colorFor(peerHex: string): string {
-  let h = 0;
-  for (const c of peerHex) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return AVATAR_COLORS[h % AVATAR_COLORS.length];
-}
-
-/** Tribe routing inside public broadcast text: `(#ballers) ...` [GM-EXT]. */
-function tagTribe(tribe: string, body: string): string {
-  return tribe === 'lobby' ? body : `(#${tribe}) ${body}`;
-}
-
-function untagTribe(content: string): { tribe: string; body: string } {
-  const m = /^\((#?)([a-z0-9]+)\)\s/.exec(content);
-  if (m && (TRIBES as readonly string[]).includes(m[2])) return { tribe: m[2], body: content.slice(m[0].length) };
-  return { tribe: 'lobby', body: content };
-}
-
-function broadcastAnnounce(me: { peerIdHex: string; nick: string }): void {
-  if (!engine) return;
-  const { signPriv, peerId } = secrets();
-  const st = useChat.getState();
-  const myStatic = (globalThis as any).__ghostStaticPub as Uint8Array;
-  const mySignPub = knownKeys().get(me.peerIdHex + ':self') as Uint8Array;
-  const payload = encodeAnnounce({
-    peerId,
-    staticPub: myStatic,
-    signingPub: mySignPub,
-    nick: me.nick,
-    timestampMs: Date.now(),
-  });
-  const unsigned = {
-    version: 1 as const,
-    type: MsgType.Announce,
-    ttl: originTTL(engine.linkCount),
-    timestampMs: Date.now(),
-    senderId: peerId,
-    payload,
+/** Boot the mesh: restore the saved identity or create one, then start radio. */
+async function bootMesh(nick?: string, tick: Tick = noTick): Promise<MeshSession | null> {
+  let phase = 'starting';
+  const step = async (label: string) => {
+    phase = label;
+    await tick(label);
   };
-  engine.send(encodePacket({ ...unsigned, signature: signBitPacket(unsigned, signPriv) }));
-  void st;
+  try {
+    await step('random…');
+    // tweetnacl needs a CSPRNG; react-native-get-random-values provides it and
+    // this is the guard that turns a silent close into a readable error.
+    if (typeof (globalThis as any).crypto?.getRandomValues !== 'function') {
+      throw new Error('secure random missing (polyfill failed)');
+    }
+    await step('keys…');
+    const existing = loadIdentity();
+    const identity =
+      existing ??
+      createIdentity(nick || `ghost-${Math.random().toString(16).slice(2, 6)}`, AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)]);
+    if (nick && existing && nick !== existing.nick) identity.nick = nick.slice(0, 18);
+    await step('engine…');
+    const session = bindSession(new MeshSession({ identity }));
+    setSession(session);
+    await step('radio…');
+    await session.start();
+    await step('ready');
+    return session;
+  } catch (err) {
+    Alert.alert('Could not enter the mesh', phase + ': ' + String((err as Error)?.message ?? err));
+    return null;
+  }
 }
 
 export default function Home() {
-  const { me, setMe, tribe, setTribe, messages, pushMsg, peers, upsertPeer, panicWipe, tribePassword } = useChat();
+  const {
+    me, setMe, tribe, setTribe, messages, peers, tribePassword, setPassword,
+    status, pruneExpired, panicWipe,
+  } = useChat();
   const [nick, setNick] = useState('');
   const [text, setText] = useState('');
   const [tapCount, setTapCount] = useState(0);
+  const [burn, setBurn] = useState(false);
+  const [attach, setAttach] = useState(false);
+  const [fileName, setFileName] = useState('note.txt');
+  const [fileBody, setFileBody] = useState('');
+  const [pwFor, setPwFor] = useState<string | null>(null);
+  const [pwDraft, setPwDraft] = useState('');
+  const [bootStep, setBootStep] = useState('');
+  const [busy, setBusy] = useState(false);
   const inputRef = useRef<TextInput>(null);
   const [update, setUpdate] = useState<{ tag: string; url: string } | null>(null);
   const [dlProgress, setDlProgress] = useState<number | null>(null);
@@ -104,6 +90,25 @@ export default function Home() {
     })();
   }, []);
 
+  // restore a previous ghost on relaunch (identity + messages come from MMKV)
+  useEffect(() => {
+    if (me || getSession()) return;
+    const saved = loadIdentity();
+    if (!saved) return;
+    void (async () => {
+      setMe({ pubkey: saved.peerIdHex, nick: saved.nick, color: saved.color });
+      const s = await bootMesh();
+      if (s) useChat.getState().hydrate();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // burn timers need a tick to actually disappear
+  useEffect(() => {
+    const id = setInterval(() => pruneExpired(), 1000);
+    return () => clearInterval(id);
+  }, [pruneExpired]);
+
   const installUpdate = async () => {
     if (!update || dlProgress !== null) return;
     try {
@@ -115,7 +120,13 @@ export default function Home() {
     }
   };
 
-  // onboarding identity — dual BitChat keys (§3)
+  // Every hook runs above this point — the onboarding branch below returns
+  // early, and React requires the same hook count on every render. (This is the
+  // first-login "rendered more hooks" crash fixed upstream in v1.0.4.)
+  const feed = useMemo(() => messages[tribe] ?? [], [messages, tribe]);
+  const ghostList = useMemo(() => Object.values(peers).sort((a, b) => b.rssi - a.rssi), [peers]);
+
+  // --- onboarding identity (dual BitChat keys, §3) ---
   if (!me) {
     return (
       <View style={s.center}>
@@ -123,85 +134,31 @@ export default function Home() {
         <Text style={s.sub}>off-grid · encrypted · no servers</Text>
         <TextInput style={s.input} placeholder="pick a nickname" placeholderTextColor="#666" value={nick} onChangeText={setNick} maxLength={18} />
         <Pressable
-          style={s.btn}
+          style={[s.btn, busy && s.btnBusy]}
           onPress={() => {
-            try {
-            const color = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
-            const id = createIdentity(nick || `ghost-${randomHex(2)}`, color);
-            setMe({ pubkey: id.peerIdHex, nick: id.nick, color });
-            (globalThis as any).__ghostSignPriv = id.signPriv; // RAM only
-            (globalThis as any).__ghostStaticPub = id.staticKey.pub;
-            (globalThis as any).__ghostStatic = id.staticKey;
-            (globalThis as any).__ghostPeerId = id.peerId;
-            knownKeys().set(id.peerIdHex, id.signPub);
-            knownKeys().set(id.peerIdHex + ':self', id.signPub);
-            engine = new MeshEngine(id.peerId);
-            engine.transport = () => {}; // BleTransport attaches here on native build
-            engine.keyForPeer = (h) => knownKeys().get(h) ?? null;
-            engine.onPacket = (p, status) => {
-              const st = useChat.getState();
-              if (p.type === MsgType.Announce) {
-                const a = decodeAnnounce(p.payload);
-                if (!a) return;
-                // self-certifying: signature must verify against the embedded key
-                if (!verifyBitPacket(p, a.signingPub)) return;
-                const h = hex(a.peerId);
-                knownKeys().set(h, a.signingPub);
-                st.upsertPeer({
-                  pubkey: h,
-                  nick: a.nick || h.slice(0, 6),
-                  color: colorFor(h),
-                  rssi: -70,
-                  lastSeen: Date.now(),
-                  hopsAway: 1,
-                  karma: 0,
-                });
-                // courier flush: deliver held frames now they're back
-                if (engine) for (const f of engine.flushForPeer(a.peerId)) engine.transport(f);
-                return;
-              }
-              if (p.type === MsgType.Message && status === 'ok') {
-                const m = decodeChatMessage(p.payload);
-                if (!m) return;
-                const h = hex(p.senderId);
-                const routed = untagTribe(m.content);
-                const show = async () => {
-                  let body = routed.body;
-                  let locked = false;
-                  if (body.startsWith('GM1:')) {
-                    locked = true;
-                    const pw = useChat.getState().tribePassword[routed.tribe] ?? '';
-                    const key = tribeKey(routed.tribe, pw);
-                    const open = openTribeMsg(key, body.slice(4));
-                    body = open ?? '🔒 locked room — set the password to read';
-                  }
-                  const peer = useChat.getState().peers[h];
-                  st.pushMsg({
-                    id: m.id,
-                    tribe: routed.tribe,
-                    from: h,
-                    nick: peer?.nick ?? m.sender,
-                    color: peer?.color ?? colorFor(h),
-                    text: body,
-                    ts: m.timestampMs,
-                    hops: 0,
-                    mine: false,
-                    verified: true,
-                  });
-                };
-                void show();
-              }
-            };
-            broadcastAnnounce({ peerIdHex: id.peerIdHex, nick: id.nick });
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            } catch (err) {
-              Alert.alert('Could not enter the mesh', String((err as Error)?.message ?? err));
-            }
+            if (busy) return;
+            setBusy(true);
+            void (async () => {
+              const tick: Tick = async (label) => {
+                setBootStep(label);
+                await new Promise<void>((r) => setTimeout(r, 80));
+              };
+              const session = await bootMesh(nick.trim(), tick);
+              setBootStep('');
+              setBusy(false);
+              if (!session) return;
+              setMe({ pubkey: session.identity.peerIdHex, nick: session.identity.nick, color: session.identity.color });
+              try {
+                await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              } catch {}
+            })();
           }}
         >
-          <Text style={s.btnText}>enter the mesh →</Text>
+          <Text style={s.btnText}>{busy ? (bootStep || 'working…') : 'enter the mesh →'}</Text>
         </Pressable>
-        <Text style={s.hint}>Real BitChat radio: binary mesh packets + Noise DMs + tribes + radar. Nothing leaves your phone except signed radio frames.</Text>
+        <Text style={s.hint}>
+          Real BitChat radio: binary mesh packets + Noise DMs + tribes + radar. Nothing leaves your phone except signed radio frames.
+        </Text>
         {update && (
           <Pressable style={[s.updateBar, { width: '100%' }]} onPress={installUpdate}>
             <Text style={s.updateTxt}>
@@ -213,45 +170,42 @@ export default function Home() {
     );
   }
 
-  const feed = useMemo(() => messages[tribe] ?? [], [messages, tribe]);
-
-  const sendMsg = async () => {
+  const sendMsg = () => {
     const body = text.trim();
-    if (!body || !engine || !me) return;
+    const session = getSession();
+    if (!body || !session) return;
     setText('');
-    const { signPriv, peerId } = secrets();
-    const pw = tribePassword[tribe] ?? '';
-    const key = tribeKey(tribe, pw);
-    const content = tagTribe(tribe, pw ? 'GM1:' + sealTribeMsg(key, body) : body);
-    const payload = encodeChatMessage({
-      flags: 0,
-      timestampMs: Date.now(),
-      id: randomHex(8),
-      sender: me.nick,
-      content,
-    });
-    const unsigned = {
-      version: 1 as const,
-      type: MsgType.Message,
-      ttl: originTTL(engine.linkCount),
-      timestampMs: Date.now(),
-      senderId: peerId,
-      payload,
-    };
-    engine.send(encodePacket({ ...unsigned, signature: signBitPacket(unsigned, signPriv) }));
-    pushMsg({
-      id: hex(peerId) + Date.now().toString(16),
-      tribe,
-      from: me.pubkey,
-      nick: me.nick,
-      color: me.color,
-      text: body,
-      ts: Date.now(),
-      hops: 0,
-      mine: true,
-      verified: true,
+    session.postTribe(tribe, body, {
+      password: tribePassword[tribe],
+      burnSeconds: burn ? DEFAULT_BURN_S : 0,
     });
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
+  const sendAttachment = () => {
+    const session = getSession();
+    const body = fileBody.trim();
+    if (!session || !body) return;
+    const bytes = new Uint8Array(body.length);
+    for (let i = 0; i < body.length; i++) bytes[i] = body.charCodeAt(i) & 0xff;
+    const n = session.sendFile(fileName.trim() || 'note.txt', bytes, 0x01);
+    setFileBody('');
+    setAttach(false);
+    Alert.alert('Sent', `${n} chunk${n === 1 ? '' : 's'} on the mesh (type 0x22).`);
+  };
+
+  const exportTribe = async () => {
+    const session = getSession();
+    if (!session) return;
+    try {
+      const txt = session.exportTranscript(tribe, feed);
+      const uri = `${FileSystem.cacheDirectory ?? ''}ghostmesh-${tribe}.txt`;
+      await FileSystem.writeAsStringAsync(uri, txt);
+      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri);
+      else Alert.alert('Exported', uri);
+    } catch (err) {
+      Alert.alert('Export failed', String((err as Error)?.message ?? err));
+    }
   };
 
   const onLogoTap = () => {
@@ -259,20 +213,31 @@ export default function Home() {
     setTapCount(n);
     if (n >= 3) {
       setTapCount(0);
-      Alert.alert('Panic wipe?', 'Deletes identity, messages and peers from this device.', [
+      Alert.alert('Panic wipe?', 'Deletes identity, keys, messages and peers from this device.', [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'WIPE', style: 'destructive', onPress: panicWipe },
+        {
+          text: 'WIPE',
+          style: 'destructive',
+          onPress: () => {
+            getSession()?.wipe();
+            setSession(null);
+            panicWipe();
+          },
+        },
       ]);
     }
     setTimeout(() => setTapCount(0), 1200);
   };
+
+  const radioLabel = status.radio.scan ? (status.radio.serve ? 'central + peripheral' : 'central only') : 'no radio';
 
   return (
     <View style={s.root}>
       <Pressable onPress={onLogoTap}>
         <View style={s.header}>
           <Text style={s.logoSm}>◈ GhostMesh</Text>
-          <Text style={s.peerCount}>{Object.keys(peers).length} nearby</Text>
+          <Text style={s.peerCount}>{Object.keys(peers).length} nearby · {radioLabel}</Text>
+          <Pressable style={s.radarBtn} onPress={exportTribe}><Text style={s.radarTxt}>export</Text></Pressable>
           <Link href="/radar" asChild><Pressable style={s.radarBtn}><Text style={s.radarTxt}>radar →</Text></Pressable></Link>
         </View>
       </Pressable>
@@ -283,13 +248,36 @@ export default function Home() {
           </Text>
         </Pressable>
       )}
+      {status.lastError && (
+        <Pressable style={s.warnBar} onPress={() => { void getSession()?.requestRadioPermissions(); }}>
+          <Text style={s.warnTxt}>⚠ {status.lastError} — tap to retry</Text>
+        </Pressable>
+      )}
       <View style={s.tribes}>
         {TRIBES.map((t) => (
-          <Pressable key={t} onPress={() => setTribe(t)} style={[s.tribe, tribe === t && s.tribeOn]}>
-            <Text style={[s.tribeTxt, tribe === t && s.tribeTxtOn]}>#{t}</Text>
+          <Pressable key={t} onPress={() => setTribe(t)} onLongPress={() => { setPwFor(t); setPwDraft(tribePassword[t] ?? ''); }} style={[s.tribe, tribe === t && s.tribeOn]}>
+            <Text style={[s.tribeTxt, tribe === t && s.tribeTxtOn]}>#{t}{tribePassword[t] ? ' 🔒' : ''}</Text>
           </Pressable>
         ))}
       </View>
+      {pwFor && (
+        <View style={s.pwRow}>
+          <TextInput style={[s.input, { flex: 1 }]} placeholder={`password for #${pwFor}`} placeholderTextColor="#666" value={pwDraft} onChangeText={setPwDraft} autoCapitalize="none" />
+          <Pressable style={s.send} onPress={() => { const t = pwFor; setPwFor(null); if (t) { setPassword(t, pwDraft); getSession()?.setPassword(t, pwDraft); } }}>
+            <Text style={s.btnText}>✓</Text>
+          </Pressable>
+        </View>
+      )}
+      {ghostList.length > 0 && (
+        <ScrollView horizontal style={{ maxHeight: 44 }} contentContainerStyle={{ paddingHorizontal: 12, gap: 6 }} showsHorizontalScrollIndicator={false}>
+          {ghostList.map((p) => (
+            <Pressable key={p.pubkey} style={s.ghost} onPress={() => router.push(`/dm?peer=${p.pubkey}`)}>
+              <Text style={{ color: p.color, fontWeight: '900' }}>●</Text>
+              <Text style={s.ghostTxt}>{p.nick}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+      )}
       <FlatList
         data={feed}
         keyExtractor={(m) => m.id}
@@ -297,12 +285,24 @@ export default function Home() {
         ListEmptyComponent={<Text style={s.empty}>Silent… be the first ghost in #{tribe}.{'\n'}Messages hop phone-to-phone, no internet needed.</Text>}
         renderItem={({ item }) => (
           <View style={[s.bubble, item.mine && s.mine]}>
-            <Text style={s.meta}><Text style={{ color: item.color }}>●</Text> {item.nick} · {item.hops === 0 ? 'direct' : `${item.hops} hops`} {item.verified ? '✓' : '⚠'}</Text>
+            <Text style={s.meta}>
+              <Text style={{ color: item.color }}>●</Text> {item.nick} · {item.hops === 0 ? 'direct' : `${item.hops} hops`} {item.verified ? '✓' : '⚠'}
+              {item.expiresAt ? ` · 🔥 ${Math.max(0, Math.round((item.expiresAt - Date.now()) / 1000))}s` : ''}
+            </Text>
             <Text style={s.body}>{item.text}</Text>
           </View>
         )}
       />
+      {attach && (
+        <View style={s.attach}>
+          <TextInput style={[s.input, { marginBottom: 6 }]} placeholder="file name" placeholderTextColor="#666" value={fileName} onChangeText={setFileName} />
+          <TextInput style={[s.input, { height: 72, textAlignVertical: 'top' }]} placeholder="paste the bytes/text to send…" placeholderTextColor="#666" value={fileBody} onChangeText={setFileBody} multiline />
+          <Text style={s.attachHint}>Sent as chunked type-0x22 frames (≤414B each), reassembled by receivers.</Text>
+        </View>
+      )}
       <View style={s.composer}>
+        <Pressable style={s.tool} onPress={() => setAttach(!attach)}><Text style={s.toolTxt}>📎</Text></Pressable>
+        <Pressable style={[s.tool, burn && s.toolOn]} onPress={() => setBurn(!burn)}><Text style={s.toolTxt}>🔥</Text></Pressable>
         <TextInput ref={inputRef} style={s.input} placeholder={`message #${tribe}…`} placeholderTextColor="#666" value={text} onChangeText={setText} onSubmitEditing={sendMsg} returnKeyType="send" />
         <Pressable style={s.send} onPress={sendMsg}><Text style={s.btnText}>➤</Text></Pressable>
       </View>
@@ -317,25 +317,36 @@ const s = StyleSheet.create({
   logoSm: { color: '#fff', fontSize: 20, fontWeight: '900' },
   sub: { color: '#8b5cf6', fontWeight: '700' },
   hint: { color: '#666', textAlign: 'center', marginTop: 12, lineHeight: 20 },
-  input: { backgroundColor: '#17171f', color: '#fff', borderRadius: 12, padding: 12, width: '100%' },
+  input: { backgroundColor: '#17171f', color: '#fff', borderRadius: 12, padding: 12, flex: 1 },
   btn: { backgroundColor: '#8b5cf6', borderRadius: 12, padding: 14, width: '100%', alignItems: 'center' },
+  btnBusy: { backgroundColor: '#3b2f63' },
   btnText: { color: '#fff', fontWeight: '800', fontSize: 16 },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12 },
-  peerCount: { color: '#10b981', fontWeight: '700' },
-  radarBtn: { marginLeft: 'auto', backgroundColor: '#17171f', padding: 8, borderRadius: 8 },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12 },
+  peerCount: { color: '#10b981', fontWeight: '700', fontSize: 11 },
+  radarBtn: { marginLeft: 6, backgroundColor: '#17171f', padding: 8, borderRadius: 8 },
   radarTxt: { color: '#06b6d4', fontWeight: '800' },
   tribes: { flexDirection: 'row', gap: 6, paddingHorizontal: 12, paddingBottom: 8 },
   updateBar: { marginHorizontal: 12, marginBottom: 8, backgroundColor: '#10b981', borderRadius: 10, padding: 10, alignItems: 'center' },
+  warnBar: { marginHorizontal: 12, marginBottom: 8, backgroundColor: '#ef4444', borderRadius: 10, padding: 10, alignItems: 'center' },
+  warnTxt: { color: '#2a0707', fontWeight: '900', fontSize: 12, textAlign: 'center' },
   updateTxt: { color: '#06281c', fontWeight: '900' },
   tribe: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: '#17171f' },
   tribeOn: { backgroundColor: '#8b5cf6' },
   tribeTxt: { color: '#999', fontWeight: '700' },
   tribeTxtOn: { color: '#fff' },
+  pwRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingBottom: 8, alignItems: 'center' },
+  ghost: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#17171f', borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5 },
+  ghostTxt: { color: '#ddd', fontWeight: '700', fontSize: 12 },
+  attach: { paddingHorizontal: 12, paddingBottom: 8 },
+  attachHint: { color: '#666', fontSize: 11, marginTop: 6 },
   empty: { color: '#555', textAlign: 'center', marginTop: 60, lineHeight: 24 },
   bubble: { backgroundColor: '#17171f', borderRadius: 12, padding: 10 },
   mine: { backgroundColor: '#241b3d', borderColor: '#8b5cf6', borderWidth: 1 },
   meta: { color: '#888', fontSize: 11, marginBottom: 4, fontWeight: '700' },
   body: { color: '#fff', fontSize: 15, lineHeight: 21 },
-  composer: { flexDirection: 'row', gap: 8, padding: 12 },
-  send: { backgroundColor: '#8b5cf6', borderRadius: 12, width: 48, alignItems: 'center', justifyContent: 'center' },
+  composer: { flexDirection: 'row', gap: 8, padding: 12, alignItems: 'center' },
+  tool: { backgroundColor: '#17171f', borderRadius: 12, width: 40, height: 44, alignItems: 'center', justifyContent: 'center' },
+  toolOn: { backgroundColor: '#3a1d1d', borderWidth: 1, borderColor: '#ef4444' },
+  toolTxt: { fontSize: 16 },
+  send: { backgroundColor: '#8b5cf6', borderRadius: 12, width: 48, height: 44, alignItems: 'center', justifyContent: 'center' },
 });
