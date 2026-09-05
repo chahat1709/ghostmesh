@@ -174,7 +174,7 @@ export default function Home() {
               },
             });
             {
-              const res = await radio.start(SERVICE_UUID_MAINNET, CHAR_UUID);
+              const res = await radio.start(SERVICE_UUID_MAINNET, CHAR_UUID, id.peerIdHex);
               if (res.error) {
                 Alert.alert('Bluetooth unavailable', res.error + ' — chat still works on this phone.');
               }

@@ -132,3 +132,16 @@ into type-`0x20` fragments at the 512B MTU.
 npm run test:bit
 # ✅ BitChat-tech: 11/11 interop tests pass
 ```
+
+## Imported BitChat code (GPL-3.0)
+
+`android/app/src/main/java/com/bitchat/android/` is imported verbatim from
+`permissionlesstech/bitchat-android` (link layer, protocol codec, broadcaster,
+tracker, power profiles), plus minimal local stubs
+(`ui.debug.DebugStubs`, `services.AppStateStore`) and the RN bridge in
+`com.ghostmesh.app.ble` that hosts their stack. Everything else (UI, TS mesh
+decisions, Noise-TS, self-updater) is GhostMesh.
+
+Because the imported code is **GPL-3.0**, this whole project is distributed
+under GPL-3.0 — see LICENSE.md. Source is public here, which satisfies the
+license as long as every APK release matches a published commit.

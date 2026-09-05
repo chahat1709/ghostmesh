@@ -2,7 +2,7 @@
   "expo": {
     "name": "GhostMesh",
     "slug": "ghostmesh",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "orientation": "portrait",
     "scheme": "ghostmesh",
     "runtimeVersion": { "policy": "appVersion" },
@@ -14,7 +14,7 @@
     ],
     "android": {
       "package": "com.ghostmesh.app",
-      "versionCode": 6,
+      "versionCode": 7,
       "permissions": [
         "BLUETOOTH",
         "BLUETOOTH_ADMIN",
