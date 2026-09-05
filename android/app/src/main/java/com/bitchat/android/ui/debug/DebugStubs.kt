@@ -27,6 +27,33 @@ class DebugSettingsManager private constructor() {
 
     fun addScanResult(result: DebugScanResult) = Unit
 
+    // No-op stand-ins for the upstream packet log (kept for API compatibility).
+    fun logOutgoing(
+        packetType: String,
+        toPeerID: String?,
+        toNickname: String?,
+        toDeviceAddress: String?,
+        previousHopPeerID: String? = null,
+        packetVersion: UByte = 1u,
+        routeInfo: String? = null
+    ) = Unit
+
+    fun logPacketRelayDetailed(
+        packetType: String,
+        senderPeerID: String?,
+        senderNickname: String?,
+        fromPeerID: String?,
+        fromNickname: String?,
+        fromDeviceAddress: String?,
+        toPeerID: String?,
+        toNickname: String?,
+        toDeviceAddress: String?,
+        ttl: UByte?,
+        isRelay: Boolean = true,
+        packetVersion: UByte = 1u,
+        routeInfo: String? = null
+    ) = Unit
+
     companion object {
         @Volatile
         private var INSTANCE: DebugSettingsManager? = null
