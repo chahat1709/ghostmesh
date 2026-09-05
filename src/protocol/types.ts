@@ -1,47 +1,27 @@
 // GhostMesh protocol v1 — types shared by mobile (BLE) + web (simulated transport).
-// Different from bitchat: identity-based, typed packets, adaptive TTL, tribes, receipts.
+// Wire framing itself lives in src/protocol/bitchat.ts (real BitChat v1 packets);
+// these are the app-level shapes the UI renders.
+//
+// History note: this file used to carry a parallel `WirePacket`/`PacketKind`
+// JSON protocol (including a `'dm Invite'` typo) from before the port to real
+// BitChat binary framing. Those types had no readers anywhere in the repo, so
+// they were removed — the binary codec is the only wire format now.
 
-export type HexPubkey = string; // 64 hex chars (ed25519 pubkey)
-
-export type PacketKind =
-  | 'announce'   // hello, I'm here: {nick, color, karma}
-  | 'msg'        // tribe / public message
-  | 'dm'         // E2E encrypted direct message
-  | 'dm Invite'  // X25519 handshake invite — actually 'dm-invite'
-  | 'ack'        // delivery receipt
-  | 'chunk'      // file/image fragment
-  | 'relayStats';// karma gossip
-
-// Fix: 'dm Invite' typo guard — canonical kinds below
-export type WireKind = 'announce' | 'msg' | 'dm' | 'dm-invite' | 'ack' | 'chunk' | 'relayStats';
-
-export interface WirePacket {
-  v: 1;
-  id: string;          // 16 hex chars, dedupe key
-  kind: WireKind;
-  from: HexPubkey;     // sender identity
-  to?: HexPubkey | string; // DM target pubkey or tribe name
-  tribe?: string;      // e.g. 'lobby' | 'ballers' — undefined = dm/announce
-  ttl: number;         // hops remaining 0..7
-  ts: number;          // epoch ms
-  hops: HexPubkey[];   // path for loop prevention + radar map
-  body: any;           // kind-specific payload (encrypted for dm)
-  sig: string;         // ed25519 signature over canonical bytes (hex)
-}
+export type HexPubkey = string; // 16 hex chars (8-byte BitChat peer id) or 64 (ed25519)
 
 export interface ChatMessage {
   id: string;
-  tribe: string;
+  tribe: string; // 'lobby' | 'ballers' | … | 'dm'
   from: HexPubkey;
   nick: string;
   color: string;
   text: string;
   ts: number;
-  hops: number;
+  hops: number; // derived from TTL decay at receipt; 0 = direct/own
   mine: boolean;
-  verified: boolean;
+  verified: boolean; // Ed25519 signature checked
   replyTo?: string;
-  expiresAt?: number; // disappearing messages
+  expiresAt?: number; // burn-after: epoch ms, pruned by chatStore.pruneExpired
   reactions?: Record<string, number>;
 }
 
@@ -49,16 +29,15 @@ export interface Peer {
   pubkey: HexPubkey;
   nick: string;
   color: string;
-  rssi: number;        // -30 (close) .. -95 (far)
-  lastSeen: number;
+  rssi: number;        // -30 (close) .. -95 (far), from the radio
+  lastSeen: number;    // epoch ms — peers past MeshSession.peerTimeoutMs are dropped
   hopsAway: number;    // 1 = direct, >1 via relay
-  karma: number;       // relay score
+  karma: number;       // relay reputation (frames this ghost delivered us)
   via?: HexPubkey;     // relay node if indirect
 }
 
 export const TRIBES = ['lobby', 'ballers', 'music', 'trade', 'afterparty'] as const;
 export type Tribe = (typeof TRIBES)[number];
 
-export const MAX_TTL = 7;
-export const MSG_TTL_MS = 7 * 24 * 3600 * 1000; // 7-day store-forward
-export const CHUNK_SIZE = 3800; // fits in one BLE extended advertisement / GATT write
+/** Store-and-forward window for courier mail held for offline peers. */
+export const MSG_TTL_MS = 7 * 24 * 3600 * 1000; // 7 days

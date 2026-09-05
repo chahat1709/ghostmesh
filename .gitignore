@@ -4,4 +4,9 @@ android/.gradle/
 .gradle/
 *.log
 .tmp-bit/
+.tmp-core/
+.tmp-mesh/
 *.tmp
+android/keystore.properties
+*.keystore
+!android/app/debug.keystore

@@ -80,6 +80,14 @@ def enableProguardInReleaseBuilds = (findProperty('android.enableProguardInRelea
  */
 def jscFlavor = 'org.webkit:android-jsc:+'
 
+// Release signing comes from android/keystore.properties (gitignored) so no
+// keystore path or password is ever committed.
+def keystorePropertiesFile = rootProject.file('keystore.properties')
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
 
@@ -102,7 +110,12 @@ android {
             keyPassword 'android'
         }
         release {
-            if (project.hasProperty('MYAPP_RELEASE_STORE_FILE')) {
+            if (keystoreProperties.getProperty('MYAPP_RELEASE_STORE_FILE')) {
+                storeFile file(keystoreProperties.getProperty('MYAPP_RELEASE_STORE_FILE'))
+                storePassword keystoreProperties.getProperty('MYAPP_RELEASE_STORE_PASSWORD')
+                keyAlias keystoreProperties.getProperty('MYAPP_RELEASE_KEY_ALIAS')
+                keyPassword keystoreProperties.getProperty('MYAPP_RELEASE_KEY_PASSWORD')
+            } else if (project.hasProperty('MYAPP_RELEASE_STORE_FILE')) {
                 storeFile file(MYAPP_RELEASE_STORE_FILE)
                 storePassword MYAPP_RELEASE_STORE_PASSWORD
                 keyAlias MYAPP_RELEASE_KEY_ALIAS

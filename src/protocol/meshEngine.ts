@@ -10,6 +10,9 @@
 import nacl from 'tweetnacl';
 import {
   BitPacket,
+  MsgType,
+  ORIGIN_TTL,
+  decodeAnnounce,
   decodePacket,
   encodePacket,
   hex,
@@ -18,6 +21,19 @@ import {
   signingBytes,
 } from './bitchat';
 import { sha256 } from '../crypto/noise';
+import { b64decode, b64encode } from './b64';
+import { MSG_TTL_MS } from './types';
+
+/**
+ * Hops a frame has already travelled, derived from the TTL it arrived with.
+ * BitChat v1 frames carry no hop counter, so distance comes from TTL decay:
+ * a frame that lands with ttl 7 is direct, ttl 5 is 2 hops away. Dense-graph
+ * originators start at 5, which the caller can pass in to stay exact.
+ */
+export function hopsFromTTL(ttl: number, origin = ORIGIN_TTL): number {
+  const h = origin - ttl;
+  return h < 0 ? 0 : h;
+}
 
 export type SendBytes = (frame: Uint8Array) => void;
 export type RecvStatus = 'ok' | 'dup' | 'dead' | 'bad-sig' | 'unknown-key';
@@ -37,7 +53,11 @@ export class MeshEngine {
   linkCount = 0; // live BLE links — drives the dense-graph TTL clamp
   seen = new Map<string, number>(); // dedupeKey -> firstSeen ms
   outbox: Uint8Array[] = []; // raw encoded frames for offline recipients
-  karma = new Map<string, number>(); // peerIdHex -> relayed count
+  karma = new Map<string, number>(); // peerIdHex -> reputation (delivered frames)
+  stats = { received: 0, accepted: 0, relayed: 0, dup: 0, dead: 0, badSig: 0 };
+  /** Relay jitter. Tests inject 0 to make forwarding synchronous. */
+  relayJitterMs: () => number = () => 20 + Math.random() * 40;
+
   onPacket: (p: BitPacket, status: RecvStatus) => void = () => {};
   transport: SendBytes = () => {};
   /** Returns the known Ed25519 signing key for a peer, or null. Fed by verified announces. */
@@ -94,13 +114,53 @@ export class MeshEngine {
     return due;
   }
 
+  /** Reputation. Positive = delivered us traffic; the radar ranks on it. */
+  addKarma(peerIdHex: string, delta: number): void {
+    this.karma.set(peerIdHex, Math.max(0, (this.karma.get(peerIdHex) ?? 0) + delta));
+  }
+
+  karmaFor(peerIdHex: string): number {
+    return this.karma.get(peerIdHex) ?? 0;
+  }
+
+  /** Serialise the outbox so the 7-day courier survives a relaunch. */
+  exportOutbox(): string[] {
+    return this.outbox.map((f) => b64encode(f));
+  }
+
+  importOutbox(frames: string[]): void {
+    for (const s of frames) {
+      try {
+        const bytes = b64decode(s);
+        if (decodePacket(bytes)) this.outbox.push(bytes);
+      } catch {}
+    }
+  }
+
+  pendingFor(peerId: Uint8Array): number {
+    return this.outbox.filter((f) => {
+      const p = decodePacket(f);
+      return !!p?.recipientId && p.recipientId.every((b, i) => b === peerId[i]);
+    }).length;
+  }
+
   /** Inbound frame from BLE / sim. Relays valid traffic with TTL-1 + jitter. */
   receive(raw: Uint8Array): RecvStatus {
+    this.stats.received++;
     const p = decodePacket(raw);
-    if (!p) return 'dead';
-    if (p.ttl <= 0) return 'dead';
+    if (!p) {
+      this.stats.dead++;
+      return 'dead';
+    }
+    if (p.ttl <= 0) {
+      this.stats.dead++;
+      return 'dead';
+    }
     const key = MeshEngine.dedupeKey(p);
-    if (this.seen.has(key)) return 'dup';
+    if (this.seen.has(key)) {
+      this.stats.dup++;
+      return 'dup';
+    }
 
     let status: RecvStatus = 'ok';
     if (p.signature && p.signature.length === 64) {
@@ -112,7 +172,22 @@ export class MeshEngine {
         } catch {
           ok = false;
         }
-        if (!ok) return 'bad-sig';
+        if (!ok) {
+          this.stats.badSig++;
+          return 'bad-sig';
+        }
+      } else if (p.type === MsgType.Announce) {
+        // Announces are self-certifying (§3): the signing key is in the
+        // payload, so verify against it instead of reporting "unknown key".
+        let selfSigned = false;
+        try {
+          const a = decodeAnnounce(p.payload);
+          selfSigned =
+            !!a && !!p.signature && nacl.sign.detached.verify(signingBytes(p), p.signature, a.signingPub);
+        } catch {
+          selfSigned = false;
+        }
+        status = selfSigned ? 'ok' : 'unknown-key';
       } else {
         // No key (announce not seen yet): flood on like a dumb relay, but
         // tell the app not to display it.
@@ -121,22 +196,27 @@ export class MeshEngine {
     }
 
     this.remember(key);
-    this.karma.set(hex(p.senderId), (this.karma.get(hex(p.senderId)) ?? 0) + 0);
+    // Karma: a peer earns reputation by delivering us traffic we had not
+    // already seen. (Previously this added 0 and the relay credited *us*.)
+    // Our own frames echoing back earn nobody anything.
+    if (!this.isMe(p.senderId)) this.addKarma(hex(p.senderId), 1);
+    this.stats.accepted++;
     this.onPacket(p, status);
 
     if (!this.isMe(p.senderId)) {
       const next = relayTTL(p.ttl, this.linkCount, isBroadcast(p));
       if (next > 0) {
         const fwd = encodePacket({ ...p, ttl: next });
-        const relayer = hex(this.myPeerId);
-        this.karma.set(relayer, (this.karma.get(relayer) ?? 0) + 1);
-        setTimeout(() => this.transport(fwd), 20 + Math.random() * 40);
+        this.stats.relayed++;
+        const delay = this.relayJitterMs();
+        if (delay <= 0) this.transport(fwd);
+        else setTimeout(() => this.transport(fwd), delay);
       }
     }
     return status;
   }
 
-  sweepOutbox(now = Date.now(), maxAgeMs = 7 * 24 * 3600 * 1000): void {
+  sweepOutbox(now = Date.now(), maxAgeMs = MSG_TTL_MS): void {
     this.outbox = this.outbox.filter((f) => {
       const p = decodePacket(f);
       return !!p && now - p.timestampMs < maxAgeMs;

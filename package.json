@@ -9,8 +9,11 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "build:apk": "eas build -p android --profile preview",
+    "test": "node ./scripts/test-core.js && node ./scripts/test-bitchat.js && node ./scripts/test-mesh.js",
     "test:core": "node ./scripts/test-core.js",
-    "test:bit": "node ./scripts/test-bitchat.js"
+    "test:bit": "node ./scripts/test-bitchat.js",
+    "test:mesh": "node ./scripts/test-mesh.js",
+    "bridge": "node ./server/bridge.js"
   },
   "dependencies": {
     "expo": "~52.0.0",
