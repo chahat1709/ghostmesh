@@ -1,7 +1,7 @@
 {
   "name": "ghostmesh",
   "version": "1.0.0",
-  "description": "GhostMesh — advanced offline mesh chat. BitChat reimagined: identity + E2E + tribes + smart relay.",
+  "description": "GhostMesh \u2014 advanced offline mesh chat. BitChat reimagined: identity + E2E + tribes + smart relay.",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
@@ -9,8 +9,12 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "build:apk": "eas build -p android --profile preview",
+    "test": "npm run test:core && npm run test:bit && npm run test:mesh && npm run test:update",
     "test:core": "node ./scripts/test-core.js",
-    "test:bit": "node ./scripts/test-bitchat.js"
+    "test:bit": "node ./scripts/test-bitchat.js",
+    "test:mesh": "node ./scripts/test-mesh.js",
+    "test:update": "node ./scripts/test-update.js",
+    "bridge": "node ./server/bridge.js"
   },
   "dependencies": {
     "expo": "~52.0.0",

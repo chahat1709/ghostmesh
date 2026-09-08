@@ -1,8 +1,10 @@
 // Proximity radar — bitchat has a peer list; GhostMesh shows a live signal map
 // with distance rings (RSSI), hop count and karma (relay reputation).
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, Pressable } from 'react-native';
+import { Link } from 'expo-router';
 import { useChat } from '../src/store/chatStore';
+import { getSession } from '../src/store/sessionHost';
 
 function ring(rssi: number): { r: number; label: string } {
   if (rssi > -60) return { r: 46, label: 'close' };
@@ -30,11 +32,22 @@ export default function Radar() {
           );
         })}
       </View>
-      {list.map((p) => (
-        <Text key={p.pubkey} style={s.row}>
-          <Text style={{ color: p.color }}>●</Text> {p.nick} · {p.rssi}dBm · {p.hopsAway <= 1 ? 'direct' : `${p.hopsAway} hops`} · karma {p.karma}
-        </Text>
-      ))}
+      {list.map((p) => {
+        const session = getSession();
+        const ready = session?.peerList().find((x) => x.peerHex === p.pubkey)?.ready ?? false;
+        return (
+          <Link key={p.pubkey} href={{ pathname: '/dm', params: { peer: p.pubkey } }} asChild>
+            <Pressable style={s.rowBtn}>
+              <Text style={s.row}>
+                <Text style={{ color: p.color }}>●</Text> {p.nick} · {p.rssi}dBm ·{' '}
+                {p.hopsAway <= 1 ? 'direct' : `${p.hopsAway} hops`} · karma {p.karma}
+                {ready ? ' · 🔒 session open' : ''}
+              </Text>
+              <Text style={s.dm}>DM →</Text>
+            </Pressable>
+          </Link>
+        );
+      })}
       {list.length === 0 && <Text style={s.empty}>No ghosts yet. Walk around — phones find each other over BLE automatically.</Text>}
     </View>
   );
@@ -48,5 +61,7 @@ const s = StyleSheet.create({
   dot: { position: 'absolute', width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   dotTxt: { color: '#fff', fontSize: 10, fontWeight: '900' },
   row: { color: '#ccc', paddingVertical: 4 },
+  rowBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  dm: { color: '#8b5cf6', fontWeight: '900' },
   empty: { color: '#555', textAlign: 'center', marginTop: 20 },
 });

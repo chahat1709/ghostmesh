@@ -5,3 +5,9 @@ android/.gradle/
 *.log
 .tmp-bit/
 *.tmp
+android/keystore.properties
+*.keystore
+!android/app/debug.keystore
+.tmp-core/
+.tmp-mesh/
+.tmp-update/
