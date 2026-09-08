@@ -8,7 +8,11 @@ import { View, Text, TextInput, Pressable, FlatList, StyleSheet, Alert } from 'r
 import { Link } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { useChat, AVATAR_COLORS } from '../src/store/chatStore';
-import { MeshEngine } from '../src/protocol/meshEngine';
+import { MeshEngine, hopsFromTTL } from '../src/protocol/meshEngine';
+import { MeshSession } from '../src/store/mesh';
+import { bindSession } from '../src/store/meshBinding';
+import { getSession, setSession, saveIdentity, loadIdentity, forgetIdentity } from '../src/store/sessionHost';
+import { exportTranscript } from '../src/store/exportTranscript';
 import {
   MsgType,
   decodeAnnounce,
@@ -101,10 +105,24 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
 
   // self-update check (GitHub releases) — silent unless an update exists
+  // Restore persisted history/tribe passwords once, and prefill the nickname
+  // from the last session so a relaunch is recognisably the same ghost.
+  useEffect(() => {
+    try {
+      useChat.getState().hydrate();
+      const restored = loadIdentity();
+      if (restored && !nick) setNick(restored.nick);
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
-        const info = await checkForApkUpdate(Application.nativeBuildVersion ?? '1');
+        const info = await checkForApkUpdate(
+          Application.nativeBuildVersion ?? '1',
+          Application.nativeApplicationVersion ?? undefined
+        );
         if (info) setUpdate({ tag: info.tag, url: info.url });
       } catch {}
     })();
@@ -124,6 +142,7 @@ export default function Home() {
   // NOTE: every hook must run before the early return below — React forbids
   // changing the hook count between renders (this once crashed first login).
   const feed = useMemo(() => messages[tribe] ?? [], [messages, tribe]);
+  const status = useChat((st) => st.status);
 
   // onboarding identity — dual BitChat keys (§3)
   if (!me) {
@@ -179,8 +198,20 @@ export default function Home() {
                 Alert.alert('Bluetooth unavailable', res.error + ' — chat still works on this phone.');
               }
             }
+            // Session layer: DMs, files, courier outbox, burn, persistence.
+            // It rides on *this* engine and the link layer above — it owns no
+            // radio of its own.
+            const session = new MeshSession({ identity: id, engine });
+            setSession(session);
+            bindSession(session);
+            saveIdentity(id);
+            session.start();
+
             engine.onPacket = (p, status, meta) => {
               const st = useChat.getState();
+              // Handshake / DM / file frames belong to the session layer.
+              const sess = getSession();
+              if (sess?.ingest(p, status, meta)) return;
               if (p.type === MsgType.Announce) {
                 const a = decodeAnnounce(p.payload);
                 if (!a) return;
@@ -188,6 +219,12 @@ export default function Home() {
                 if (!verifyBitPacket(p, a.signingPub)) return;
                 const h = hex(a.peerId);
                 knownKeys().set(h, a.signingPub);
+                sess?.learnPeer(h, a.signingPub, {
+                  nick: a.nick || h.slice(0, 6),
+                  rssi: meta?.rssi ?? -70,
+                  hops: hopsFromTTL(p.ttl),
+                  staticPub: a.staticPub, // enables a DM before any handshake
+                });
                 st.upsertPeer({
                   pubkey: h,
                   nick: a.nick || h.slice(0, 6),
@@ -198,7 +235,7 @@ export default function Home() {
                   karma: 0,
                 });
                 // courier flush: deliver held frames now they're back
-                if (engine) for (const f of engine.flushForPeer(a.peerId)) engine.transport(f);
+                sess?.flushFor(h);
                 return;
               }
               if (p.type === MsgType.Message && status === 'ok') {
@@ -228,7 +265,7 @@ export default function Home() {
                     color: peer?.color ?? colorFor(h),
                     text: body,
                     ts: m.timestampMs,
-                    hops: 0,
+                    hops: hopsFromTTL(p.ttl),
                     mine: false,
                     verified: true,
                   });
@@ -312,6 +349,23 @@ export default function Home() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
+  const onExport = () => {
+    void (async () => {
+      try {
+        const st = useChat.getState();
+        const res = await exportTranscript({
+          me: st.me,
+          messages: st.messages,
+          dms: st.dms,
+          peers: st.peers,
+        });
+        Alert.alert('Transcript ready', res.uri);
+      } catch (e) {
+        Alert.alert('Export failed', String((e as Error)?.message ?? e));
+      }
+    })();
+  };
+
   const onLogoTap = () => {
     const n = tapCount + 1;
     setTapCount(n);
@@ -323,6 +377,10 @@ export default function Home() {
           void radio?.stop();
           radio = null;
           engine = null;
+          getSession()?.wipe();
+          getSession()?.stop();
+          setSession(null);
+          forgetIdentity();
           if (announceTimer) { clearInterval(announceTimer); announceTimer = null; }
           try { knownKeys().clear(); } catch {}
           const g = globalThis as any;
@@ -341,6 +399,7 @@ export default function Home() {
         <View style={s.header}>
           <Text style={s.logoSm}>◈ GhostMesh</Text>
           <Text style={s.peerCount}>{Object.keys(peers).length} nearby</Text>
+          <Pressable style={s.radarBtn} onPress={onExport}><Text style={s.radarTxt}>export</Text></Pressable>
           <Link href="/radar" asChild><Pressable style={s.radarBtn}><Text style={s.radarTxt}>radar →</Text></Pressable></Link>
         </View>
       </Pressable>
@@ -351,6 +410,11 @@ export default function Home() {
           </Text>
         </Pressable>
       )}
+      {status && (status.outbox > 0 || status.lastError) ? (
+        <Text style={s.statusBar}>
+          {status.lastError ? `⚠ ${status.lastError}` : `⏳ ${status.outbox} message${status.outbox === 1 ? '' : 's'} held for offline ghosts`}
+        </Text>
+      ) : null}
       <View style={s.tribes}>
         {TRIBES.map((t) => (
           <Pressable key={t} onPress={() => setTribe(t)} style={[s.tribe, tribe === t && s.tribeOn]}>
@@ -394,6 +458,7 @@ const s = StyleSheet.create({
   radarBtn: { marginLeft: 'auto', backgroundColor: '#17171f', padding: 8, borderRadius: 8 },
   radarTxt: { color: '#06b6d4', fontWeight: '800' },
   tribes: { flexDirection: 'row', gap: 6, paddingHorizontal: 12, paddingBottom: 8 },
+  statusBar: { marginHorizontal: 12, marginBottom: 8, color: '#f59e0b', fontWeight: '700' },
   updateBar: { marginHorizontal: 12, marginBottom: 8, backgroundColor: '#10b981', borderRadius: 10, padding: 10, alignItems: 'center' },
   updateTxt: { color: '#06281c', fontWeight: '900' },
   tribe: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: '#17171f' },

@@ -1,0 +1,64 @@
+# Android verification for GhostMesh.
+#
+# This lives in ci/ rather than .github/workflows/ because the automation token
+# used to open PRs here has no `workflows` scope, so a push that adds or edits
+# anything under .github/workflows/ is rejected. To enable it, copy this file to
+# .github/workflows/android-verify.yml from a token that does have that scope.
+#
+# What it proves that the sandbox cannot: the imported bitchat-android Kotlin
+# link layer actually compiles against the app, and a debug APK builds.
+name: android-verify
+
+on:
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'src/**'
+      - 'app/**'
+      - 'package.json'
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Unit + mesh + updater tests
+        run: npm test
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Compile Kotlin link layer
+        working-directory: android
+        run: ./gradlew :app:compileDebugKotlin --no-daemon --stacktrace
+
+      - name: Assemble debug APK
+        working-directory: android
+        run: ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghostmesh-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14

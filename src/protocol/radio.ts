@@ -26,7 +26,7 @@ async function requestRadioPermissions(): Promise<{ ok: boolean; missing: string
   try {
     const res = await PermissionsAndroid.requestMultiple(wanted);
     const missing = wanted.filter(
-      (k: string) => res[k] !== PermissionsAndroid.RESULTS.GRANTED
+      (k: string) => res[k as keyof typeof res] !== PermissionsAndroid.RESULTS.GRANTED
     );
     return { ok: missing.length === 0, missing };
   } catch {

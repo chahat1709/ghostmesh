@@ -3,31 +3,9 @@
 
 export type HexPubkey = string; // 64 hex chars (ed25519 pubkey)
 
-export type PacketKind =
-  | 'announce'   // hello, I'm here: {nick, color, karma}
-  | 'msg'        // tribe / public message
-  | 'dm'         // E2E encrypted direct message
-  | 'dm Invite'  // X25519 handshake invite — actually 'dm-invite'
-  | 'ack'        // delivery receipt
-  | 'chunk'      // file/image fragment
-  | 'relayStats';// karma gossip
-
-// Fix: 'dm Invite' typo guard — canonical kinds below
-export type WireKind = 'announce' | 'msg' | 'dm' | 'dm-invite' | 'ack' | 'chunk' | 'relayStats';
-
-export interface WirePacket {
-  v: 1;
-  id: string;          // 16 hex chars, dedupe key
-  kind: WireKind;
-  from: HexPubkey;     // sender identity
-  to?: HexPubkey | string; // DM target pubkey or tribe name
-  tribe?: string;      // e.g. 'lobby' | 'ballers' — undefined = dm/announce
-  ttl: number;         // hops remaining 0..7
-  ts: number;          // epoch ms
-  hops: HexPubkey[];   // path for loop prevention + radar map
-  body: any;           // kind-specific payload (encrypted for dm)
-  sig: string;         // ed25519 signature over canonical bytes (hex)
-}
+// Wire framing lives in src/protocol/bitchat.ts (real BitChat v1 packets).
+// The JSON `WirePacket` shape that used to sit here was never used by the
+// encoder or the decoder — only the binary format goes over the air.
 
 export interface ChatMessage {
   id: string;
@@ -59,6 +37,4 @@ export interface Peer {
 export const TRIBES = ['lobby', 'ballers', 'music', 'trade', 'afterparty'] as const;
 export type Tribe = (typeof TRIBES)[number];
 
-export const MAX_TTL = 7;
 export const MSG_TTL_MS = 7 * 24 * 3600 * 1000; // 7-day store-forward
-export const CHUNK_SIZE = 3800; // fits in one BLE extended advertisement / GATT write

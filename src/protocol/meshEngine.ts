@@ -18,6 +18,19 @@ import {
   signingBytes,
 } from './bitchat';
 import { sha256 } from '../crypto/noise';
+import { b64decode, b64encode } from './ble';
+import { MSG_TTL_MS } from './types';
+import { ORIGIN_TTL } from './bitchat';
+
+/**
+ * Hops a frame has already travelled, derived from the TTL it arrived with.
+ * v1 frames carry no hop counter, so distance comes from TTL decay: ttl 7 is
+ * direct, ttl 5 is two hops away.
+ */
+export function hopsFromTTL(ttl: number, origin = ORIGIN_TTL): number {
+  const h = origin - ttl;
+  return h < 0 ? 0 : h;
+}
 
 export type SendBytes = (frame: Uint8Array) => void;
 export type RecvStatus = 'ok' | 'dup' | 'dead' | 'bad-sig' | 'unknown-key';
@@ -63,6 +76,36 @@ export class MeshEngine {
       const oldest = [...this.seen.entries()].sort((a, b) => a[1] - b[1]).slice(0, 1000);
       for (const [k] of oldest) this.seen.delete(k);
     }
+  }
+
+  /** Reputation. Positive = delivered us traffic; the radar ranks on it. */
+  addKarma(peerIdHex: string, delta: number): void {
+    this.karma.set(peerIdHex, Math.max(0, (this.karma.get(peerIdHex) ?? 0) + delta));
+  }
+
+  karmaFor(peerIdHex: string): number {
+    return this.karma.get(peerIdHex) ?? 0;
+  }
+
+  /** Serialise the courier outbox so it survives a relaunch. */
+  exportOutbox(): string[] {
+    return this.outbox.map((f) => b64encode(f));
+  }
+
+  importOutbox(frames: string[]): void {
+    for (const s of frames) {
+      try {
+        const bytes = b64decode(s);
+        if (decodePacket(bytes)) this.outbox.push(bytes);
+      } catch {}
+    }
+  }
+
+  pendingFor(peerId: Uint8Array): number {
+    return this.outbox.filter((f) => {
+      const p = decodePacket(f);
+      return !!p?.recipientId && p.recipientId.every((b, i) => b === peerId[i]);
+    }).length;
   }
 
   private isMe(id: Uint8Array): boolean {
@@ -121,22 +164,23 @@ export class MeshEngine {
     }
 
     this.remember(key);
-    this.karma.set(hex(p.senderId), (this.karma.get(hex(p.senderId)) ?? 0) + 0);
+    // Karma: a peer earns reputation by delivering traffic we had not already
+    // seen. This used to add 0, and the relay below credited *us* for its own
+    // forwarding, so the radar's karma column never moved.
+    if (!this.isMe(p.senderId)) this.addKarma(hex(p.senderId), 1);
     this.onPacket(p, status, meta);
 
     if (!this.isMe(p.senderId)) {
       const next = relayTTL(p.ttl, this.linkCount, isBroadcast(p));
       if (next > 0) {
         const fwd = encodePacket({ ...p, ttl: next });
-        const relayer = hex(this.myPeerId);
-        this.karma.set(relayer, (this.karma.get(relayer) ?? 0) + 1);
         setTimeout(() => this.transport(fwd), 20 + Math.random() * 40);
       }
     }
     return status;
   }
 
-  sweepOutbox(now = Date.now(), maxAgeMs = 7 * 24 * 3600 * 1000): void {
+  sweepOutbox(now = Date.now(), maxAgeMs = MSG_TTL_MS): void {
     this.outbox = this.outbox.filter((f) => {
       const p = decodePacket(f);
       return !!p && now - p.timestampMs < maxAgeMs;

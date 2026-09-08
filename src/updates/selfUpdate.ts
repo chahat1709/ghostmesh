@@ -21,8 +21,47 @@ export function tagToCode(tag: string): number {
   return Number.isFinite(n) ? n : NaN;
 }
 
+/** `v2.0.5` -> [2, 0, 5]. Returns null when the tag is not semver-ish. */
+export function parseSemver(tag: string): [number, number, number] | null {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/i.exec(String(tag ?? '').trim());
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+/** -1 / 0 / 1. Non-semver inputs compare as 0 (unknown). */
+export function compareSemver(a: string, b: string): number {
+  const pa = parseSemver(a);
+  const pb = parseSemver(b);
+  if (!pa || !pb) return 0;
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * Is `tag` newer than what is running?
+ *
+ * Semver tags (v2.0.5) are compared against the app version string; bare
+ * integer tags (v7) are legacy versionCode tags and compare against the build
+ * number. Comparing a semver tag against versionCode is what used to happen:
+ * parseInt('2.0.5') === 2 <= 7, so no update was ever offered.
+ */
+export function isNewerTag(tag: string, currentBuildCode: string, currentVersion?: string): boolean {
+  const clean = String(tag ?? '').trim();
+  if (parseSemver(clean) && currentVersion && parseSemver(currentVersion)) {
+    return compareSemver(clean, currentVersion) > 0;
+  }
+  const latest = tagToCode(clean);
+  const current = parseInt(String(currentBuildCode ?? ''), 10);
+  return Number.isFinite(latest) && Number.isFinite(current) && latest > current;
+}
+
 /** Returns update info when the latest GitHub release is newer than us. Null = no update / offline / error. */
-export async function checkForApkUpdate(currentBuildCode: string): Promise<ApkUpdate | null> {
+export async function checkForApkUpdate(
+  currentBuildCode: string,
+  currentVersion?: string
+): Promise<ApkUpdate | null> {
   try {
     if (Platform.OS !== 'android') return null;
     const r = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/releases/latest`, {
@@ -30,9 +69,7 @@ export async function checkForApkUpdate(currentBuildCode: string): Promise<ApkUp
     });
     if (!r.ok) return null;
     const j = await r.json();
-    const latest = tagToCode(String(j.tag_name ?? ''));
-    const current = parseInt(String(currentBuildCode ?? ''), 10);
-    if (!Number.isFinite(latest) || !Number.isFinite(current) || latest <= current) return null;
+    if (!isNewerTag(String(j.tag_name ?? ''), currentBuildCode, currentVersion)) return null;
     const apk = (j.assets ?? []).find((a: any) => typeof a?.name === 'string' && /\.apk$/i.test(a.name));
     if (!apk?.browser_download_url) return null;
     return { tag: String(j.tag_name), url: String(apk.browser_download_url), notes: String(j.body ?? ''), size: Number(apk.size ?? 0) };
